@@ -1,0 +1,20 @@
+# FROZEN by tools/freeze_v4.py 2026-10-03 05:23 (handoffPlan_v3_solver step D)
+# chosen: F1o = selected.yaml (A-1, sha256 97f3cc7194ef...) + solver tol_mode grad + F1o switches; all datasets
+mode: deform
+variant: A
+energy:
+  w_p: 1.0
+  w_con: 1.0
+tum:
+  reliability:
+    sigma_D: 0.037
+    sigma_n: 0.34
+replica:
+  reliability:
+    sigma_D: 0.002
+    sigma_n: 0.01
+solver:
+  tol_mode: grad
+corr:
+  s_gate:
+    layers: old

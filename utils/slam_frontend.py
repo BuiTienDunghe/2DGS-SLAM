@@ -13,6 +13,8 @@ from typing import Optional
 
 from utils.logging_utils import Log
 from utils.io_utils import clone_obj
+from utils.seed_utils import seed_everything
+from utils import loop_dump
 from utils.slam_utils import image_gradient, image_gradient_mask
 
 import open3d as o3d
@@ -343,9 +345,46 @@ class FrontEnd(mp.Process):
             self.key_frame_ids,
         )
 
-    def _save_run_metrics_csv(self, ate_kf, ate_all, rend_out):
+    def _save_final_state(self, name):
+        """Gaussians + every tracked pose (c2w), for offline end-of-run metrics."""
+        try:
+            state = {
+                "gaussians": loop_dump.gaussian_state(self.gaussians),
+                "poses": {int(u): loop_dump.c2w(c) for u, c in self.cameras.items()},
+                "poses_gt": {int(u): loop_dump.gt_c2w(c) for u, c in self.cameras.items()},
+                "keyframe_uids": sorted(int(u) for u in self.key_frame_ids),
+                "cam_meta": {int(u): loop_dump.cam_meta(self.cameras[u]) for u in self.key_frame_ids},
+                "loop_uid_pairs": list(self.loop_uid_pairs),
+                "config": self.config,
+            }
+            path = os.path.join(self.save_dir, name)
+            torch.save(state, path)
+            Log("saved", path, tag="Eval")
+        except Exception as e:
+            Log(f"final state {name} not saved: {e}", tag="Eval")
+
+    def _save_resources(self, extra):
+        try:
+            res = {
+                "frontend_peak_vram_gb": torch.cuda.max_memory_allocated() / 1024**3,
+                "frontend_peak_reserved_gb": torch.cuda.max_memory_reserved() / 1024**3,
+                "n_frames": len(self.cameras),
+                "n_keyframes": len(self.key_frame_ids),
+                "n_loop_pairs": len(self.loop_uid_pairs),
+                "seed": self.config["Results"].get("seed"),
+            }
+            res.update(extra)
+            bpath = os.path.join(self.save_dir, "resources_backend.json")
+            if os.path.exists(bpath):
+                with open(bpath, "r", encoding="utf-8") as f:
+                    res["backend"] = json.load(f)
+            loop_dump.write_json(os.path.join(self.save_dir, "resources.json"), res)
+        except Exception as e:
+            Log(f"resources.json not saved: {e}", tag="Eval")
+
+    def _save_run_metrics_csv(self, ate_kf, ate_all, rend_out, csv_name="metrics.csv"):
         run_name = os.path.basename(os.path.normpath(self.save_dir))
-        csv_path = os.path.join(self.save_dir, "metrics.csv")
+        csv_path = os.path.join(self.save_dir, csv_name)
         mp, ms, ml = None, None, None
         if rend_out is not None:
             mp = rend_out.get("mean_psnr")
@@ -1121,6 +1160,10 @@ class FrontEnd(mp.Process):
             Log(f"kf+ front uid={uid} n_kf={len(self.key_frame_ids)}{tag}", tag="Track")
 
     def run(self):
+        seed_everything(int(self.config["Results"].get("seed", 42)))
+        # see BackEnd.run: undo the TF32 default that dust3r/croco sets at import time
+        torch.backends.cuda.matmul.allow_tf32 = bool(self.config["Results"].get("allow_tf32", False))
+        Log(f"allow_tf32 (matmul) = {torch.backends.cuda.matmul.allow_tf32}", tag="SLAM")
         if self._spark_live_enabled:
             try:
                 from utils.spark_live_server import start_spark_live_server
@@ -1200,12 +1243,27 @@ class FrontEnd(mp.Process):
                         nf = len(self.cameras)
                         # Log(f"Total time \\[s\\] {dt:.4f}", tag="Eval")
                         Log(f"SLAM FPS [Hz] {nf / dt:.4f}", tag="Eval")
+                        self._slam_time_s = dt
+                        self._save_final_state("final_state.pt")
+                        res_extra = {"slam_time_s": dt, "fps_hz": nf / dt,
+                                     "total_time_s": time.perf_counter() - t_slam0}
                         if self.map_refine is True:
+                            self._save_run_metrics_csv(ate_kf, ate_all, rend_out,
+                                                       csv_name="metrics_prerefine.csv")
+                            self._save_resources(res_extra)
+                            self._t_refine0 = time.perf_counter()
+                            # eval + TSDF meshing leave ~15 GB in this process's cache (Replica run #2); the
+                            # backend's refine messages then cannot be mapped over CUDA IPC -> OOM. Release it.
+                            torch.cuda.empty_cache()
+                            coll = getattr(torch.cuda, "ipc_collect", None)
+                            if coll is not None:
+                                coll()
                             self.request_map_refine()
                             self.requested_refine = True
                             continue
                         else:
                             self._save_run_metrics_csv(ate_kf, ate_all, rend_out)
+                            self._save_resources(res_extra)
                             break
     
                     if self.requested_init:
@@ -1418,6 +1476,13 @@ class FrontEnd(mp.Process):
                             pose_file_name = os.path.join(self.save_dir, f"key_pose_{nt}.txt")
                             Log(f"To offline inspect the map, use: python viser.py --ply_path {file_name} --pose_path {pose_file_name} --mesh_path {mesh_file_name}")
                         self._save_run_metrics_csv(ate_kf, ate_all, rend_out)
+                        self._save_final_state("final_state_refined.pt")
+                        self._save_resources({
+                            "slam_time_s": getattr(self, "_slam_time_s", None),
+                            "fps_hz": len(self.cameras) / self._slam_time_s if getattr(self, "_slam_time_s", None) else None,
+                            "refine_plus_eval_time_s": time.perf_counter() - self._t_refine0,
+                            "total_time_s": time.perf_counter() - t_slam0,
+                        })
                         break
     
                     elif data[0] == "stop":

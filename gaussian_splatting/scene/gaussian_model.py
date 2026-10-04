@@ -49,6 +49,8 @@ class GaussianModel:
         self.unique_kfIDs = torch.empty(0, device=self.device).int()
         self.last_observe_ids = torch.empty(0, device=self.device).int()
         self.active_mask = torch.empty(0, device=self.device).bool()
+        # t^0: uid of the keyframe that created the Gaussian (never overwritten; copied on clone/split)
+        self.birth_kfIDs = torch.empty(0, device=self.device).int()
 
         self.optimizer = None
         self.scaling_activation = torch.exp
@@ -68,6 +70,10 @@ class GaussianModel:
     def get_ids(self):
         return self.unique_kfIDs
     
+    @property
+    def get_birth_ids(self):
+        return self.birth_kfIDs
+
     @property
     def get_last_observe_ids(self):
         return self.last_observe_ids
@@ -136,9 +142,10 @@ class GaussianModel:
                                    new_rotation, 
                                    new_kf_id,
                                    new_lo_id,
-                                   new_active_mask)
-        
-    
+                                   new_active_mask,
+                                   new_birth_ids=new_kf_id)
+
+
     def update_after_pgo(self, pose_updates):
         R_updates = pose_updates[:, :3, :3]
         t_updates = pose_updates[:, :3, 3]
@@ -253,7 +260,10 @@ class GaussianModel:
                               new_rotation,
                               new_kfids,
                               new_loids,
-                              new_active_mask):
+                              new_active_mask,
+                              new_birth_ids=None):
+        if new_birth_ids is None:
+            new_birth_ids = new_kfids
         d = {"xyz": new_xyz,
             "f_dc": new_features_dc,
             "f_rest": new_features_rest,
@@ -273,7 +283,28 @@ class GaussianModel:
         self.unique_kfIDs = torch.cat([self.unique_kfIDs, new_kfids], dim=0).int()
         self.last_observe_ids = torch.cat([self.last_observe_ids, new_loids], dim=0).int()
         self.active_mask = torch.cat([self.active_mask, new_active_mask], dim=0).bool()
-    
+        self.birth_kfIDs = torch.cat([self.birth_kfIDs, new_birth_ids], dim=0).int()
+
+    def check_bookkeeping(self):
+        """Raise if per-Gaussian tensors disagree in length or t0 <= tc / t0 <= tl is violated."""
+        n = self._xyz.shape[0]
+        per_g = {
+            "f_dc": self._features_dc, "f_rest": self._features_rest, "opacity": self._opacity,
+            "scaling": self._scaling, "rotation": self._rotation,
+            "min_observed_depth": self.min_observed_depth, "unique_kfIDs": self.unique_kfIDs,
+            "last_observe_ids": self.last_observe_ids, "active_mask": self.active_mask,
+            "birth_kfIDs": self.birth_kfIDs,
+        }
+        bad = {k: int(v.shape[0]) for k, v in per_g.items() if v.shape[0] != n}
+        if bad:
+            raise AssertionError(f"per-Gaussian length mismatch (N={n}): {bad}")
+        known = self.birth_kfIDs >= 0
+        if bool((known & (self.birth_kfIDs > self.unique_kfIDs)).any()):
+            raise AssertionError("birth_kfIDs > unique_kfIDs for some Gaussians")
+        if bool((known & (self.birth_kfIDs > self.last_observe_ids)).any()):
+            raise AssertionError("birth_kfIDs > last_observe_ids for some Gaussians")
+        return True
+
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
@@ -304,6 +335,7 @@ class GaussianModel:
         self.min_observed_depth = self.min_observed_depth[valid_points_mask]
         self.last_observe_ids = self.last_observe_ids[valid_points_mask]
         self.active_mask = self.active_mask[valid_points_mask]
+        self.birth_kfIDs = self.birth_kfIDs[valid_points_mask]
 
     def densify_and_clone(self, mask):
         new_xyz = self._xyz[mask]
@@ -316,17 +348,19 @@ class GaussianModel:
         new_min_observed_depth = self.min_observed_depth[mask]
         new_lo_id = self.last_observe_ids[mask]
         new_active_mask = self.active_mask[mask]
+        new_birth_ids = self.birth_kfIDs[mask]
 
-        self.densification_postfix(new_xyz, 
-                                   new_features_dc, 
-                                   new_features_rest, 
+        self.densification_postfix(new_xyz,
+                                   new_features_dc,
+                                   new_features_rest,
                                    new_opacities,
-                                   new_min_observed_depth, 
+                                   new_min_observed_depth,
                                    new_scaling,
                                    new_rotation,
                                    new_kf_id,
                                    new_lo_id,
-                                   new_active_mask)
+                                   new_active_mask,
+                                   new_birth_ids=new_birth_ids)
         
     
     def densify_and_split(self, selected_pts_mask, N=2):
@@ -354,16 +388,19 @@ class GaussianModel:
         old_active_mask = self.active_mask[selected_pts_mask]
         new_active_mask = old_active_mask.repeat(N,1)
 
-        self.densification_postfix(new_xyz, 
-                                   new_features_dc, 
-                                   new_features_rest, 
+        new_birth_ids = self.birth_kfIDs[selected_pts_mask].repeat(N,1)
+
+        self.densification_postfix(new_xyz,
+                                   new_features_dc,
+                                   new_features_rest,
                                    new_opacity,
-                                   new_min_observed_depth, 
+                                   new_min_observed_depth,
                                    new_scaling,
-                                   new_rotation, 
+                                   new_rotation,
                                    new_kf_id,
                                    new_lo_id,
-                                   new_active_mask)
+                                   new_active_mask,
+                                   new_birth_ids=new_birth_ids)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
@@ -511,5 +548,7 @@ class GaussianModel:
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
 
         self.active_mask = torch.tensor(active_state, dtype=torch.bool, device="cuda")
+        # PLY files carry no keyframe bookkeeping: birth id unknown (-1)
+        self.birth_kfIDs = -torch.ones((xyz.shape[0], 1), dtype=torch.int, device="cuda")
         self.active_sh_degree = self.max_sh_degree
 

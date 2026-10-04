@@ -35,3 +35,8 @@ wandb/
 .cursor/
 .cursorrules
 bak/
+
+# experiment outputs, local backups and notes
+results_exp/
+runs/
+.cache/

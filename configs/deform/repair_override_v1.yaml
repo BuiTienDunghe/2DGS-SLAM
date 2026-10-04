@@ -1,0 +1,9 @@
+# repair round (P3_repair_rule.md): sigma = median over tuning events of p75 of r_D / e_n
+tum:
+  reliability:
+    sigma_D: 0.037
+    sigma_n: 0.34
+replica:
+  reliability:
+    sigma_D: 0.002
+    sigma_n: 0.01

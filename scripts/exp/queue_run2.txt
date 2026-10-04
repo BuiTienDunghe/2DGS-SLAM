@@ -1,0 +1,2 @@
+# baseline-lock #2 (Replica office2), started after P1/P3 tooling was validated on the TUM dumps
+configs/replica/office2.yaml 0 rigid_s0 -l -r 26000 --dump-loops

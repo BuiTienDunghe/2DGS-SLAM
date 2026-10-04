@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import time
@@ -18,7 +19,9 @@ from simple_knn._C import distCUDA2
 from utils.io_utils import clone_obj
 from utils.logging_utils import Log
 from utils.pgo import PoseGraphManager
+from utils.seed_utils import seed_everything
 from utils.voxel_utils import VoxelHash
+from utils import loop_dump
 
 sys.path.append('gaussian_splatting')
 from gaussian_renderer import render
@@ -106,6 +109,21 @@ class BackEnd(mp.Process):
         self.verbose = bool(rs.get("verbose", False))
         self.map_refine_iterations = max(0, int(rs.get("map_refine_iterations", 26000)))
         self._spark_live_interval = float(rs.get("spark_live_interval_sec", 5.0))
+
+        # experiment instrumentation (handoff plan P0); none of it changes the map in rigid mode
+        self.seed = int(rs.get("seed", 42))
+        self.run_dir = rs.get("run_dir")
+        self.dump_loops = bool(rs.get("dump_loops", False))
+        self.deform_cfg = loop_dump.load_deform_config(rs.get("deform_config_path"))
+        self.deform_resolved = None
+        if self.deform_cfg["mode"] != "rigid":
+            from deform import config as deform_config  # lazy: rigid runs never import the method
+            import deform.online  # noqa: F401  fail fast at start-up, not at the first loop event
+            self.deform_resolved = deform_config.resolve(self.deform_cfg, self.config)
+            if self.deform_resolved.get("seed_from_run", True):
+                self.deform_resolved["seed"] = self.seed
+        self.loop_event_count = 0
+        self.loop_attempt_count = 0
 
     def reset(self):
         self.accepted_loop_pairs = []
@@ -454,6 +472,50 @@ class BackEnd(mp.Process):
         self.frontend_queue.put(msg)
 
 
+    def apply_rigid_correction(self):
+        """Baseline map fix after PGO (moved verbatim from the "pgo" branch).
+
+        Moves every Gaussian rigidly by the pose increment of its keyframe (unique_kfIDs)
+        and writes the optimized poses into key_cameras / all_cameras.
+        Returns {uid: delta_T (4x4 world-frame increment)} for the keyframes.
+        """
+        delta_T = {}
+        N = self.gaussians.get_xyz.shape[0]
+        N_pose_updates = torch.eye(4, device=self.device, dtype=self.dtype).unsqueeze(0).repeat(N, 1, 1)
+        for frame_id in self.all_cam_ids:
+            optimized_pose = torch.from_numpy(self.pgo.get_optimized_node_pose(frame_id)).to(self.device).to(self.dtype).inverse()
+            if frame_id in self.key_cameras:
+                pose_update = optimized_pose.inverse() @ self.key_cameras[frame_id].T
+                mask = (self.gaussians.get_ids == frame_id).squeeze(1)
+                N_pose_updates[mask] = pose_update.unsqueeze(0).repeat(mask.sum(), 1, 1)
+                self.key_cameras[frame_id].T = optimized_pose
+                delta_T[frame_id] = pose_update
+            self.all_cameras[frame_id].T = optimized_pose
+        self.gaussians.update_after_pgo(N_pose_updates)
+        return delta_T
+
+    def _write_backend_resources(self):
+        if not self.run_dir:
+            return
+        try:
+            loop_dump.write_json(
+                os.path.join(self.run_dir, "resources_backend.json"),
+                {
+                    # plan v4 A5 (log only): the deform hook resets the peak counter per event and keeps the
+                    # run-level peak on self._vram_run_peak; without the hook this is the plain torch peak
+                    "backend_peak_vram_gb": max(torch.cuda.max_memory_allocated(), getattr(self, "_vram_run_peak", 0)) / 1024**3,
+                    "backend_peak_reserved_gb": torch.cuda.max_memory_reserved() / 1024**3,
+                    "n_gaussians": int(self.gaussians.get_xyz.shape[0]),
+                    "n_keyframes": len(self.key_cameras),
+                    "n_loop_events": self.loop_event_count,
+                    "n_loop_attempts": self.loop_attempt_count,
+                    "refine_time_s": getattr(self, "refine_time_s", None),
+                    "wall_time": time.time(),
+                },
+            )
+        except Exception as e:
+            Log("resources_backend.json write failed:", str(e), tag="Map")
+
     def _spark_live_export_ply(self, spark_live_dir):
         try:
             ply_path = os.path.join(spark_live_dir, "live.ply")
@@ -510,6 +572,11 @@ class BackEnd(mp.Process):
 
 
     def run(self):
+        # spawned child does not inherit the parent's seed (it only gets random.seed(0) at import)
+        seed_everything(self.seed)
+        # dust3r/croco sets allow_tf32=True at import (re-run in this spawned child). TF32 matmuls make the
+        # pose products lose orthonormality (det(R) 0.69 after 657 frames) -> force full fp32 (P0 decision).
+        torch.backends.cuda.matmul.allow_tf32 = bool(self.config["Results"].get("allow_tf32", False))
         while True:
             if self.backend_queue.empty():
                 if self.pause:
@@ -577,10 +644,14 @@ class BackEnd(mp.Process):
             else:
                 data = self.backend_queue.get()
                 if data[0] == "stop":
+                    self._write_backend_resources()
                     break
                 if data[0] == "refine":
                     spark_dir = data[1] if len(data) > 1 else None
+                    t_ref0 = time.perf_counter()
                     self.map_refinement(spark_live_dir=spark_dir)
+                    self.refine_time_s = time.perf_counter() - t_ref0
+                    self._write_backend_resources()
                     self.push_to_frontend(tag='refine')
 
                 elif data[0] == "pause":
@@ -644,6 +715,9 @@ class BackEnd(mp.Process):
                     self.active_cam_id_list = list(active_set)
                     self.inactive_cam_id_list = [cam for cam in self.cam_id_list if cam not in active_set]
 
+                    if len(self.cam_id_list) % 20 == 0:
+                        self._write_backend_resources()
+
                     if self.verbose:
                         Log(
                             f"map kf uid={key_camera.uid} iters={self.key_frame_iter_num} "
@@ -674,31 +748,65 @@ class BackEnd(mp.Process):
                     loop_pose = loop_camera.T.inverse().cpu().numpy()
 
                     loop_transform = np.linalg.inv(loop_pose) @ cur_pose
+                    # plan v4 A6 (log only): add_loop_factor() also returns True when it removed the new factor
+                    # again because the graph error stayed below its threshold; record whether the factor is
+                    # really in the graph (non-null factor count before / after) and the graph error it caused
+                    nr_factors_before = int(self.pgo.graph_factors.nrFactors())
                     loop_success = self.pgo.add_loop_factor(cur_id = cur_camera.uid,
                                              loop_id = loop_camera.uid,
                                              loop_transform= loop_transform)
+                    loop_factor_in_graph = int(self.pgo.graph_factors.nrFactors()) > nr_factors_before
 
+                    self.loop_attempt_count += 1
+                    attempt = {"attempt_id": self.loop_attempt_count, "cur_uid": int(cur_camera.uid),
+                               "loop_uid": int(loop_camera.uid), "loop_factor_accepted": bool(loop_success),
+                               "loop_factor_in_graph": bool(loop_factor_in_graph),
+                               "graph_err_with_loop": float(self.pgo.graph_factors.error(self.pgo.graph_initials)),
+                               "pgo_ran": False, "wall_time": time.time()}
                     if loop_success is True:
+                        pgo_err_before = float(self.pgo.graph_factors.error(self.pgo.graph_initials))
+                        attempt["pgo_err_before"] = pgo_err_before
                         if self.pgo.optimize_pose_graph() is True:
+                            attempt["pgo_ran"] = True
                             pair = (
                                 int(cur_camera.uid),
                                 int(loop_camera.uid),
                             )
                             if pair not in self.accepted_loop_pairs:
                                 self.accepted_loop_pairs.append(pair)
-                            N = self.gaussians.get_xyz.shape[0]
-                            N_pose_updates = torch.eye(4, device=self.device, dtype=self.dtype).unsqueeze(0).repeat(N, 1, 1)
-                            for frame_id in self.all_cam_ids:
-                                optimized_pose = torch.from_numpy(self.pgo.get_optimized_node_pose(frame_id)).to(self.device).to(self.dtype).inverse()
-                                if frame_id in self.key_cameras:
-                                    pose_update = optimized_pose.inverse() @ self.key_cameras[frame_id].T
-                                    mask = (self.gaussians.get_ids == frame_id).squeeze(1)
-                                    N_pose_updates[mask] = pose_update.unsqueeze(0).repeat(mask.sum(), 1, 1)
-                                    self.key_cameras[frame_id].T = optimized_pose
-                                self.all_cameras[frame_id].T = optimized_pose
-                            self.gaussians.update_after_pgo(N_pose_updates)
+                            t_fix0 = time.perf_counter()
+                            pre = None
+                            if self.dump_loops:
+                                pre = loop_dump.snapshot_pre(self, cur_camera, loop_camera)
+                            deform_log = None
+                            dT_online = None
+                            if self.deform_resolved is None:
+                                dT_online = self.apply_rigid_correction()
+                            else:
+                                from deform.online import backend_correct
+                                applied, deform_log = backend_correct(self, cur_camera, loop_camera, self.deform_resolved)
+                                if not applied:
+                                    dT_online = self.apply_rigid_correction()
+                                Log(f"deform event: accepted={applied} reason={deform_log.get('fallback_reason')} "
+                                    f"t={deform_log.get('t_stage_s', {}).get('total')}", tag="Map")
+                            if pre is not None and dT_online is not None:
+                                pre["dT_online"] = {int(u): T.detach().double().cpu() for u, T in dT_online.items()}
+                            t_fix = time.perf_counter() - t_fix0
+                            self.loop_event_count += 1
+                            event = loop_dump.event_record(
+                                self, cur_camera, loop_camera, pgo_err_before, t_fix, deform_log)
+                            if pre is not None:
+                                loop_dump.save_dump(self, pre, event)
+                                try:
+                                    self.gaussians.check_bookkeeping()
+                                except AssertionError as e:
+                                    Log(f"check_bookkeeping FAILED at loop event: {e}", tag="Map")
+                                    event["bookkeeping_error"] = str(e)
+                            loop_dump.append_jsonl(self.run_dir, "loop_events.jsonl", event)
+                            self._write_backend_resources()
 
                         self.update_state(cur_camera, loop_cam=loop_camera)
+                    loop_dump.append_jsonl(self.run_dir, "loop_attempts.jsonl", attempt)
 
                     if self.verbose:
                         Log(

@@ -1,0 +1,18 @@
+# FROZEN by tools/freeze_v3.py 2026-10-02 10:57 (plan v2 §5, TUM-only selection)
+# chosen config: F1t on top of selected.yaml (A-1, sha256 97f3cc7194ef...); new switches under tum: only
+mode: deform
+variant: A
+energy:
+  w_p: 1.0
+  w_con: 1.0
+tum:
+  reliability:
+    sigma_D: 0.037
+    sigma_n: 0.34
+  corr:
+    s_gate:
+      tau: 0.1
+replica:
+  reliability:
+    sigma_D: 0.002
+    sigma_n: 0.01

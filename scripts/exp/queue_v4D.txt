@@ -1,0 +1,7 @@
+# handoffPlan_v4_determinism step D (approved 2026-10-03): fr1/room, frozen configs/deform/selected_v5.yaml
+# (= selected_v4 + corr.select hash + det.render/torch + pose_sync.anchor prior). Order per user decision (3):
+# #3 seed 0 -> #5 seed 1 -> baseline rigid seed 1. Same args as baseline #1 (-l -r 26000 --dump-loops).
+# All three run with CUBLAS_WORKSPACE_CONFIG=:4096:8 (tools/exp_env.sh, plan v4 A3); baseline #1 ran without it.
+configs/tum/fr1_room.yaml 0 deform5_s0 -l -r 26000 --dump-loops --deform-config configs/deform/selected_v5.yaml
+configs/tum/fr1_room.yaml 1 deform5_s1 -l -r 26000 --dump-loops --deform-config configs/deform/selected_v5.yaml
+configs/tum/fr1_room.yaml 1 rigid_s1 -l -r 26000 --dump-loops

@@ -1,0 +1,5 @@
+# method runs (plan §3.2 #3-#6): frozen configs/deform/selected.yaml, interleaved scenes, seeds 0 then 1
+configs/tum/fr1_room.yaml 0 deform_s0 -l -r 26000 --dump-loops --deform-config configs/deform/selected.yaml
+configs/replica/office2.yaml 0 deform_s0 -l -r 26000 --dump-loops --deform-config configs/deform/selected.yaml
+configs/tum/fr1_room.yaml 1 deform_s1 -l -r 26000 --dump-loops --deform-config configs/deform/selected.yaml
+configs/replica/office2.yaml 1 deform_s1 -l -r 26000 --dump-loops --deform-config configs/deform/selected.yaml

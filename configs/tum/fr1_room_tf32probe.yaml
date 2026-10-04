@@ -1,0 +1,5 @@
+# THROWAWAY test config (P4 live-hook probe): same as fr1_room but with the old TF32 behaviour, whose drift
+# reliably triggers a PGO event at frame 82 within --range 0 200 2. No number from runs with this config is used.
+inherit_from: "configs/tum/fr1_room.yaml"
+Results:
+  allow_tf32: True

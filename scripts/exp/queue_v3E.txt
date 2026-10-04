@@ -1,0 +1,4 @@
+# handoffPlan_v3_solver step E (approved 2026-10-03, option a): fr1/room only, frozen configs/deform/selected_v4.yaml
+# (A-1 + solver tol_mode grad + corr.s_gate.layers old, sha256 7329092f...), seeds 0 then 1; same args as baseline #1
+configs/tum/fr1_room.yaml 0 deform4_s0 -l -r 26000 --dump-loops --deform-config configs/deform/selected_v4.yaml
+configs/tum/fr1_room.yaml 1 deform4_s1 -l -r 26000 --dump-loops --deform-config configs/deform/selected_v4.yaml

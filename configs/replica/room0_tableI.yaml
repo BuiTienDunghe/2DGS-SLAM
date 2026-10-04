@@ -1,0 +1,13 @@
+# room0 with the hyperparameters of the paper's Table I (zhong2026tro) where they differ from base_config.yaml.
+# Not the stock configuration. The 15 cm keyframe distance (dk) is already hard-coded in slam_frontend.py.
+inherit_from: "configs/replica/base_config.yaml"
+Dataset:
+  sequence_name: "room0_tableI"
+  dataset_path: "datasets/replica/room0/"
+  single_thread: False
+Training:
+  kf_overlap: 0.9          # ck (base: 0.925)
+  lambda_depth: 0.5        # wd (base: 5.0)
+  lambda_normal: 0.02      # wn (base: 0.05)
+  active_train_num: 3      # Na (base: 5)
+  inactive_train_num: 2    # Ni (base: 3)

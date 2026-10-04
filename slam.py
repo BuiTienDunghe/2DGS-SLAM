@@ -189,6 +189,8 @@ class SLAM:
         self.frontend.q_vis2main = q_vis2main
         self.frontend.dust3r = dust3r
         self.frontend.set_params()
+        # run folder is created by the frontend; the backend writes loop dumps/logs into it
+        self.config["Results"]["run_dir"] = self.frontend.save_dir
 
         self.backend.gaussians = self.gaussians
         self.backend.background = self.background
@@ -242,19 +244,21 @@ class SLAM:
             time.sleep(3)
 
         backend_process.start()
-        self.frontend.run()
-
-        self.backend_queue.put(["pause"])
-        self.backend_queue.put(["stop"])
-        backend_process.join(timeout=120)
-        if backend_process.is_alive():
-            Log("Backend did not exit after stop; terminating.", tag="SLAM")
-            backend_process.terminate()
-            backend_process.join(timeout=30)
-        if backend_process.is_alive():
-            backend_process.kill()
-            backend_process.join(timeout=15)
-        backend_process.close()
+        try:
+            self.frontend.run()
+        finally:
+            # also on a frontend exception (e.g. CUDA OOM): stop the backend instead of leaving it mapping forever
+            self.backend_queue.put(["pause"])
+            self.backend_queue.put(["stop"])
+            backend_process.join(timeout=120)
+            if backend_process.is_alive():
+                Log("Backend did not exit after stop; terminating.", tag="SLAM")
+                backend_process.terminate()
+                backend_process.join(timeout=30)
+            if backend_process.is_alive():
+                backend_process.kill()
+                backend_process.join(timeout=15)
+            backend_process.close()
 
         Log("Backend stopped and joined the main thread")
         if self.use_gui:
@@ -271,17 +275,7 @@ class SLAM:
             _close_mp_queue(q)
 
 
-def seed_everything(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    import os as _os
-
-    _os.environ["PYTHONHASHSEED"] = str(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+from utils.seed_utils import seed_everything  # noqa: E402  (shared with frontend/backend)
 
 
 app = typer.Typer(invoke_without_command=True, no_args_is_help=True, add_completion=False, context_settings={"help_option_names": ["-h", "--help"]})
@@ -347,6 +341,26 @@ def main(
             resolve_path=False,
         ),
     ] = None,
+    seed: Annotated[
+        int,
+        typer.Option("--seed", help="Seed for main, frontend and backend processes (default 42 = old behaviour)."),
+    ] = 42,
+    tag: Annotated[
+        Optional[str],
+        typer.Option("--tag", help="Run name tag (Results.name_tag)."),
+    ] = None,
+    save_dir: Annotated[
+        Optional[str],
+        typer.Option("--save-dir", help="Results root (Results.save_dir)."),
+    ] = None,
+    deform_config: Annotated[
+        Optional[Path],
+        typer.Option("--deform-config", exists=True, dir_okay=False, help="Deformation config YAML (default: rigid = baseline)."),
+    ] = None,
+    dump_loops: Annotated[
+        bool,
+        typer.Option("--dump-loops", help="Dump pre/post map state at every loop event."),
+    ] = False,
 ) -> None:
     rng = _parse_range_str(range_)
     mp.set_start_method("spawn")
@@ -371,7 +385,16 @@ def main(
     db = str(dataset_base) if dataset_base is not None else None
     _apply_dataset_base_override(cfg, db)
 
-    seed_everything(42)
+    rs = cfg.setdefault("Results", {})
+    rs["seed"] = int(seed)
+    if tag is not None:
+        rs["name_tag"] = tag
+    if save_dir is not None:
+        rs["save_dir"] = save_dir
+    rs["dump_loops"] = bool(dump_loops)
+    rs["deform_config_path"] = str(deform_config) if deform_config is not None else None
+
+    seed_everything(int(seed))
     SLAM(cfg).run()
     Log("Done.")
 

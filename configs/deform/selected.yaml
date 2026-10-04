@@ -1,0 +1,15 @@
+# FROZEN by tools/run_offline_deform.py 2026-10-02 04:54 (P3, rule 8.2-2 (V-A passes))
+# chosen config: A-1; tuning set: results_exp/tum/room/20261002013837_rigid_s0, results_exp/replica/office2/20261002024857_rigid_s0
+mode: deform
+variant: A
+energy:
+  w_p: 1.0
+  w_con: 1.0
+tum:
+  reliability:
+    sigma_D: 0.037
+    sigma_n: 0.34
+replica:
+  reliability:
+    sigma_D: 0.002
+    sigma_n: 0.01
