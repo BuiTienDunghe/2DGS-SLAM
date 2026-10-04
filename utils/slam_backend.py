@@ -124,6 +124,26 @@ class BackEnd(mp.Process):
                 self.deform_resolved["seed"] = self.seed
         self.loop_event_count = 0
         self.loop_attempt_count = 0
+        # plan v6 X1 (record-only): idle mapping iterations between frontend requests, wall time per request
+        self.core_log = bool(rs.get("core_log", True))
+        self._idle_iters = 0
+        self._idle_time_s = 0.0
+
+    def _log_backend_timing(self, kind, uid, t_msg0, extra=None):
+        """plan v6 X1: one timing_backend.jsonl line per frontend request + the idle mapping done since the last one."""
+        if self.core_log:
+            try:
+                rec = {"type": kind, "uid": int(uid), "t_s": time.perf_counter() - t_msg0,
+                       "idle_iters_since_last": self._idle_iters, "t_idle_s": self._idle_time_s,
+                       "n_gauss": int(self.gaussians.get_xyz.shape[0]), "n_kf": len(self.key_cameras),
+                       "wall_time": time.time()}
+                if extra:
+                    rec.update(extra)
+                loop_dump.append_jsonl(self.run_dir, "timing_backend.jsonl", rec)
+            except Exception as e:
+                Log(f"timing_backend log failed: {e}", tag="Map")
+        self._idle_iters = 0
+        self._idle_time_s = 0.0
 
     def reset(self):
         self.accepted_loop_pairs = []
@@ -587,6 +607,7 @@ class BackEnd(mp.Process):
                     time.sleep(0.01)
                     continue
 
+                t_idle0 = time.perf_counter()
                 self.iteration_count += 1
 
                 # select from historical frames to refine inactive map
@@ -636,14 +657,20 @@ class BackEnd(mp.Process):
                             f"actKFs={len(self.active_cam_id_list)}",
                             tag="Map",
                         )
+                    self._idle_iters += 1
+                    self._idle_time_s += time.perf_counter() - t_idle0
                     continue
 
                 if self.iteration_count % 15 == 0:
                     self.prune_outlier()
                     self.push_to_frontend()
+                self._idle_iters += 1
+                self._idle_time_s += time.perf_counter() - t_idle0
             else:
                 data = self.backend_queue.get()
+                t_msg0 = time.perf_counter()
                 if data[0] == "stop":
+                    self._log_backend_timing("stop", -1, t_msg0)
                     self._write_backend_resources()
                     break
                 if data[0] == "refine":
@@ -686,6 +713,7 @@ class BackEnd(mp.Process):
                     self.last_loop_id = init_camera.uid
                     self.last_node_id = init_camera.uid
                     self.push_to_frontend("init")
+                    self._log_backend_timing("init", init_camera.uid, t_msg0)
 
                 elif data[0] == "keyframe":
                     key_camera, key_frame, window = data[1], data[2], data[3]
@@ -726,6 +754,8 @@ class BackEnd(mp.Process):
                             tag="Map",
                         )
                     self.push_to_frontend(tag='keyframe')
+                    self._log_backend_timing("keyframe", key_camera.uid, t_msg0,
+                                             {"n_tracked_cams": len(tracked_cams)})
 
                 elif data[0] == "pgo":
                     cur_camera, cur_frame, loop_camera = data[1], data[2], data[3]
@@ -752,6 +782,11 @@ class BackEnd(mp.Process):
                     # again because the graph error stayed below its threshold; record whether the factor is
                     # really in the graph (non-null factor count before / after) and the graph error it caused
                     nr_factors_before = int(self.pgo.graph_factors.nrFactors())
+                    # plan v6 X5 (log only): the numbers add_loop_factor() is about to test, read before the call
+                    err_before_attempt = float(self.pgo.graph_factors.error(self.pgo.graph_initials))
+                    last_error_before = float(self.pgo.last_error)
+                    valid_error_thre = last_error_before + (
+                        int(cur_camera.uid) - int(self.pgo.last_loop_idx)) * float(self.pgo.pgo_error_thre_frame)
                     loop_success = self.pgo.add_loop_factor(cur_id = cur_camera.uid,
                                              loop_id = loop_camera.uid,
                                              loop_transform= loop_transform)
@@ -762,7 +797,16 @@ class BackEnd(mp.Process):
                                "loop_uid": int(loop_camera.uid), "loop_factor_accepted": bool(loop_success),
                                "loop_factor_in_graph": bool(loop_factor_in_graph),
                                "graph_err_with_loop": float(self.pgo.graph_factors.error(self.pgo.graph_initials)),
-                               "pgo_ran": False, "wall_time": time.time()}
+                               "pgo_ran": False, "wall_time": time.time(),
+                               # plan v6 X5: measurement T_loop<-cur and the outcome, also for attempts that do not
+                               # stay in the graph (graph_err_with_loop above is read after a removal, i.e. without it)
+                               "loop_transform": np.asarray(loop_transform, dtype=np.float64).tolist(),
+                               "cur_pose_c2w": np.asarray(cur_pose, dtype=np.float64).tolist(),
+                               "loop_pose_c2w": np.asarray(loop_pose, dtype=np.float64).tolist(),
+                               "graph_err_before_attempt": err_before_attempt,
+                               "last_error": last_error_before, "valid_error_thre": valid_error_thre,
+                               "reason": ("rejected_outlier" if loop_success is not True
+                                          else ("kept" if loop_factor_in_graph else "removed_small_error"))}
                     if loop_success is True:
                         pgo_err_before = float(self.pgo.graph_factors.error(self.pgo.graph_initials))
                         attempt["pgo_err_before"] = pgo_err_before
@@ -815,6 +859,9 @@ class BackEnd(mp.Process):
                             tag="Map",
                         )
                     self.push_to_frontend_after_pgo()
+                    self._log_backend_timing("pgo", cur_camera.uid, t_msg0,
+                                             {"loop_uid": int(loop_camera.uid), "reason": attempt["reason"],
+                                              "pgo_ran": attempt["pgo_ran"], "n_tracked_cams": len(tracked_cams)})
                 
                 else:
                     raise Exception("Unprocessed data", data)

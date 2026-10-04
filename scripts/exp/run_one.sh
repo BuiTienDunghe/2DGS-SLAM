@@ -7,7 +7,9 @@ cd "$(dirname "$0")/../.."
 source tools/exp_env.sh
 
 cfg=$1; seed=$2; tag=$3; shift 3
-logdir=results_exp/logs
+# results root; plan v6 runs use SAVE_DIR=results_m
+save=${SAVE_DIR:-results_exp}
+logdir=$save/logs
 mkdir -p "$logdir"
 scene=$(basename "$cfg" .yaml)
 stamp=$(date +%Y%m%d%H%M%S)
@@ -29,7 +31,7 @@ case "$cfg" in
 esac
 echo "[run_one] start $(date -Is) cfg=$cfg seed=$seed tag=$tag timeout=$tmo args=$*" | tee -a "$log"
 timeout --signal=TERM --kill-after=120 "$tmo" \
-  python slam.py --config "$cfg" --seed "$seed" --tag "$tag" --save-dir results_exp "$@" >> "$log" 2>&1 &
+  python slam.py --config "$cfg" --seed "$seed" --tag "$tag" --save-dir "$save" "$@" >> "$log" 2>&1 &
 spid=$!
 # watchdog: a hung pipeline stops writing to the log (e.g. frontend waiting forever on a dead backend)
 (
@@ -56,7 +58,7 @@ sleep 2
 # a dead main process can leave the spawned backend mapping forever at 100% GPU
 pkill -9 -f "multiprocessing.spawn" 2>/dev/null
 
-rundir=$(find results_exp -mindepth 3 -maxdepth 3 -type d -name "*_${tag}" -newermt "@$t0" | sort | tail -1)
+rundir=$(find "$save" -mindepth 3 -maxdepth 3 -type d -name "*_${tag}" -newermt "@$t0" | sort | tail -1)
 status=FAILED
 if [[ -n "$rundir" && -f "$rundir/metrics.csv" ]]; then status=COMPLETE; fi
 if [[ -n "$rundir" ]]; then

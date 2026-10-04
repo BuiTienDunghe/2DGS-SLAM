@@ -246,6 +246,8 @@ class MonocularDataset(BaseDataset):
         )
         # distortion parameters
         self.disorted = calibration["distorted"]
+        # plan v6 X3 (loader mode D): also undistort the depth image, which is registered to the raw RGB
+        self.depth_undistort = bool(calibration.get("depth_undistort", False))
         self.crop_edge = calibration["crop_edge"] if 'crop_edge' in calibration else 0
 
         self.dist_coeffs = np.array(
@@ -297,8 +299,16 @@ class MonocularDataset(BaseDataset):
 
         if self.has_depth:
             depth_path = self.depth_paths[idx]
-            depth = np.array(Image.open(depth_path)) / self.depth_scale  
-        
+            if self.depth_undistort and self.disorted:
+                raw_depth = np.array(Image.open(depth_path))
+                if raw_depth.dtype not in (np.uint16, np.float32):
+                    raw_depth = raw_depth.astype(np.float32)  # cv2.remap has no int32 support
+                raw_depth = cv2.remap(raw_depth, self.map1x, self.map1y, cv2.INTER_NEAREST,
+                                      borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                depth = raw_depth / self.depth_scale
+            else:
+                depth = np.array(Image.open(depth_path)) / self.depth_scale
+
         image = (
             torch.from_numpy(image / 255.0)
             .clamp(0.0, 1.0)

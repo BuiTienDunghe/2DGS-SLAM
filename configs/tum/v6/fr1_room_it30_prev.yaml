@@ -1,0 +1,6 @@
+# plan v6 R5: tracking capped at 30 iterations, original "prev" initialisation
+inherit_from: "configs/tum/fr1_room.yaml"
+
+Training:
+  tracking_itr_num: 30
+  init_mode: "prev"

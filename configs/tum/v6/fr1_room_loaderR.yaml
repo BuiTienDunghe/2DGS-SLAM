@@ -1,0 +1,10 @@
+# plan v6 R4, loader mode R: raw RGB and raw depth with the ROS default intrinsics (TUM recommendation)
+inherit_from: "configs/tum/fr1_room.yaml"
+
+Dataset:
+  Calibration:
+    distorted: False
+    fx: 525.0
+    fy: 525.0
+    cx: 319.5
+    cy: 239.5
