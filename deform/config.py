@@ -42,11 +42,15 @@ DEFAULTS = {
                "time_budget_s": 120.0, "enforce": True},
     # anchor (plan v4 A4): none (frozen A-1..v4) | prior -> after the pose sync the whole result (Gaussians and
     # poses) is moved by one rigid transform so that the prior-fixed frame keeps exactly its PGO pose
-    "pose_sync": {"method": "kabsch", "min_gauss": 200, "anchor": "none"},
+    # regen_odom (plan v5 A2): odometry factors touching a moved pose are re-measured from the written poses
+    "pose_sync": {"method": "kabsch", "min_gauss": 200, "anchor": "none", "regen_odom": False},
     "diagnostics": {"stretch_samples": 10000, "stretch_h": 0.01},
     # plan v4 A3: render -> deformation renders use diff_surfel_rasterization_det (int64 fixed-point
     # contributions); torch -> torch.use_deterministic_algorithms inside the pipeline (restored after)
     "det": {"render": False, "torch": False},
+    # plan v5 A1: two layers by the active mask (A-1..v5) or by birth keyframe t0 with the split
+    # s_k = (loop_uid + cur_uid) / 2 (old: t0 < s_k, new: t0 >= s_k); used for pairs, node assignment and Pi*
+    "layers": {"mode": "active"},
 }
 
 # values that differ between TUM and Replica (Appendix A)

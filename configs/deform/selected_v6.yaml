@@ -1,0 +1,30 @@
+# FROZEN by tools/freeze_v6.py 2026-10-04 07:30 (handoffPlan_v5_persistence step A4)
+# = selected_v5.yaml (sha256 7c74fd000c3e...) + layers.mode birth (A1) + pose_sync.regen_odom (A2); all datasets
+mode: deform
+variant: A
+energy:
+  w_p: 1.0
+  w_con: 1.0
+tum:
+  reliability:
+    sigma_D: 0.037
+    sigma_n: 0.34
+replica:
+  reliability:
+    sigma_D: 0.002
+    sigma_n: 0.01
+solver:
+  tol_mode: grad
+corr:
+  s_gate:
+    layers: old
+  select: hash
+  hash_salt: 11400714819323198485
+det:
+  render: true
+  torch: true
+pose_sync:
+  anchor: prior
+  regen_odom: true
+layers:
+  mode: birth

@@ -1,0 +1,4 @@
+# handoffPlan_v5_persistence step C (only after the go for step C): fr1/room, frozen configs/deform/selected_v6.yaml
+# (= selected_v5 + layers.mode birth + pose_sync.regen_odom). Same args as baseline #1. Seeds 0 then 1.
+configs/tum/fr1_room.yaml 0 deform6_s0 -l -r 26000 --dump-loops --deform-config configs/deform/selected_v6.yaml
+configs/tum/fr1_room.yaml 1 deform6_s1 -l -r 26000 --dump-loops --deform-config configs/deform/selected_v6.yaml

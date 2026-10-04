@@ -29,7 +29,7 @@ def anchored_uids(pgo):
     return sorted(out)
 
 
-def backend_inp(be, cur_camera):
+def backend_inp(be, cur_camera, loop_camera=None):
     g = be.gaussians
     with torch.no_grad():
         G = {"xyz": g.get_xyz.detach().float().clone(), "rot": g.get_rotation.detach().float().clone(),
@@ -56,11 +56,90 @@ def backend_inp(be, cur_camera):
                  "cy": float(cur_camera.cy), "W": int(cur_camera.image_width), "H": int(cur_camera.image_height)},
         "frame_fn": frame_fn, "tr": be.config["Training"], "W": int(be.old_than_N_keyframe), "seed": int(be.seed),
         "anchor_uids": anchored_uids(be.pgo),
+        "cur_uid": int(cur_camera.uid), "loop_uid": None if loop_camera is None else int(loop_camera.uid),
     }
 
 
-def write_back(be, res):
-    """Gaussians (xyz, rotation) via replace_tensors_in_optimizer; poses into cameras and gtsam."""
+def factor_classes(pgo, all_cam_ids):
+    """{index: 'prior' | 'odom' | 'loop'} for the non-null factors. Odometry factors join two frames that are
+    consecutive in all_cam_ids (add_odom_node_to_graph); loop factors join (loop_uid, cur_uid)."""
+    import gtsam
+
+    nxt = {int(a): int(b) for a, b in zip(all_cam_ids[:-1], all_cam_ids[1:])}
+    out = {}
+    g = pgo.graph_factors
+    for i in range(g.size()):
+        f = g.at(i)
+        if f is None:
+            continue
+        ks = [int(gtsam.Symbol(k).index()) for k in f.keys()]
+        if len(ks) == 1:
+            out[i] = "prior"
+        elif len(ks) == 2 and nxt.get(ks[0]) == ks[1]:
+            out[i] = "odom"
+        else:
+            out[i] = "loop"
+    return out
+
+
+def graph_error_by_class(pgo, classes, values):
+    tot = {"prior": 0.0, "odom": 0.0, "loop": 0.0}
+    g = pgo.graph_factors
+    for i, c in classes.items():
+        tot[c] += float(g.at(i).error(values))
+    return tot
+
+
+def regen_odometry(be, poses_new, anchored, tol_t=1e-6, tol_r=1e-6):
+    """plan v5 A2: re-measure odometry factors that touch a frame whose written pose differs from the value the
+    graph holds (> tol), with inv(T'_i) T'_j from the written c2w poses. Returns the log dict."""
+    import gtsam
+    import numpy as np
+
+    g = be.pgo.graph_factors
+    vals = be.pgo.graph_initials
+    moved = set()
+    T_new = {}
+    for uid, P in poses_new.items():
+        key = gtsam.symbol("x", int(uid))
+        if not vals.exists(key):
+            continue
+        Pn = P.double().numpy()
+        T_new[int(uid)] = Pn
+        if int(uid) in anchored:
+            continue
+        held = vals.atPose3(key).matrix()
+        d = np.linalg.inv(held) @ Pn
+        ang = float(np.arccos(np.clip((np.trace(d[:3, :3]) - 1) / 2, -1, 1)))
+        if float(np.linalg.norm(d[:3, 3])) > tol_t or ang > tol_r:
+            moved.add(int(uid))
+    classes = factor_classes(be.pgo, be.all_cam_ids)
+    n_rep, max_dm, max_da = 0, 0.0, 0.0
+    for i, c in classes.items():
+        if c != "odom":
+            continue
+        f = g.at(i)
+        ki, kj = [int(gtsam.Symbol(k).index()) for k in f.keys()]
+        if ki not in moved and kj not in moved:
+            continue
+        if ki not in T_new or kj not in T_new:
+            continue
+        meas = np.linalg.inv(T_new[ki]) @ T_new[kj]
+        old = f.measured().matrix()
+        dm = np.linalg.inv(old) @ meas
+        max_dm = max(max_dm, float(np.linalg.norm(dm[:3, 3])))
+        max_da = max(max_da, float(np.arccos(np.clip((np.trace(dm[:3, :3]) - 1) / 2, -1, 1))))
+        g.replace(i, gtsam.BetweenFactorPose3(f.keys()[0], f.keys()[1], gtsam.Pose3(meas), f.noiseModel()))
+        n_rep += 1
+    return {"regen_n_moved": len(moved), "regen_n_replaced": n_rep, "regen_n_odom": sum(1 for c in classes.values() if c == "odom"),
+            "regen_n_loop": sum(1 for c in classes.values() if c == "loop"), "regen_max_dmeas_m": max_dm,
+            "regen_max_dmeas_rad": max_da}, classes
+
+
+def write_back(be, res, regen_odom=False):
+    """Gaussians (xyz, rotation) via replace_tensors_in_optimizer; poses into cameras and gtsam.
+    plan v5 A2 (regen_odom): odometry factors are re-measured from the written poses BEFORE the values are
+    updated, so the reported error after the write is that of the consistent graph."""
     import gtsam
 
     g = be.gaussians
@@ -73,6 +152,12 @@ def write_back(be, res):
     # so the camera pose written below agrees with it to float precision); report the residual
     anchored = set(anchored_uids(be.pgo))
     resid = {}
+    extra = {}
+    classes = None
+    if regen_odom:
+        rlog, classes = regen_odometry(be, res["poses"], anchored)
+        extra.update(rlog)
+        extra["gtsam_err_before_sync_regen_graph"] = float(be.pgo.graph_factors.error(be.pgo.graph_initials))
     for uid, P in res["poses"].items():
         w2c = torch.linalg.inv(P.double()).float().to(be.device)
         if uid in be.all_cameras:
@@ -88,8 +173,15 @@ def write_back(be, res):
             continue
         be.pgo.graph_initials.update(key, gtsam.Pose3(P.double().numpy()))
     be.pgo.last_error = be.pgo.graph_factors.error(be.pgo.graph_initials)
+    if classes is None:
+        classes = factor_classes(be.pgo, be.all_cam_ids)
+    extra["gtsam_err_after_sync_by_class"] = graph_error_by_class(be.pgo, classes, be.pgo.graph_initials)
+    # residual of the loop factor of THIS event (the newest loop factor in the graph), after the write
+    loop_idx = [i for i, c in classes.items() if c == "loop"]
+    if loop_idx:
+        extra["loop_factor_k_error_after_sync"] = float(be.pgo.graph_factors.at(max(loop_idx)).error(be.pgo.graph_initials))
     return {"gtsam_err_before_sync": err_before, "gtsam_err_after_sync": float(be.pgo.last_error),
-            "anchored_uids": sorted(anchored), "anchor_resid_m": resid}
+            "anchored_uids": sorted(anchored), "anchor_resid_m": resid, **extra}
 
 
 def backend_correct(be, cur_camera, loop_camera, dcfg_resolved):
@@ -105,7 +197,7 @@ def backend_correct(be, cur_camera, loop_camera, dcfg_resolved):
     tf32_prev = torch.backends.cuda.matmul.allow_tf32
     torch.backends.cuda.matmul.allow_tf32 = False
     try:
-        inp = backend_inp(be, cur_camera)
+        inp = backend_inp(be, cur_camera, loop_camera)
         res = correct_map(inp, dcfg_resolved, dcfg_resolved["variant"])
     except Exception as e:  # any failure -> rigid fallback (never crash the SLAM run)
         import traceback
@@ -128,7 +220,7 @@ def backend_correct(be, cur_camera, loop_camera, dcfg_resolved):
         snap_vals = gtsam.Values(be.pgo.graph_initials)
         snap_err = be.pgo.last_error
         try:
-            log.update(write_back(be, res))
+            log.update(write_back(be, res, regen_odom=bool(dcfg_resolved["pose_sync"].get("regen_odom", False))))
         except Exception as e:
             import traceback
             opt = g.replace_tensors_in_optimizer({"xyz": snap_xyz, "rotation": snap_rot})

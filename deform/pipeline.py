@@ -40,7 +40,7 @@ def prep_key(cfg, variant):
     Constant for every config of the P3 grid, so P3 caching is unchanged."""
     k = {"corr": cfg["corr"], "reg": cfg.get("reg"), "tau_S": cfg["reliability"]["tau_S"],
          "enforce": cfg["accept"].get("enforce", True), "min_corr": cfg["accept"]["min_corr"],
-         "det": cfg.get("det")}
+         "det": cfg.get("det"), "layers": cfg.get("layers")}
     return f"prep_{variant}_" + json.dumps(k, sort_keys=True, default=str)
 
 
@@ -117,6 +117,21 @@ def anchor_gauge(inp, src_poses, xyz_new, rot_new, poses_new):
                                          "rot_deg": ang, "resid_m": resid, "n_anchors": len(anchors)}
 
 
+def _rigid_gap_both_splits(st, G_rig, poses_rig, inp, cfg, J_eval, m_old, m_new, H, W):
+    """Median |gap| (mm) on the evaluation cells of J_eval, rigid state, for the configured split and the other one."""
+    tile = cfg["corr"]["checker"]
+    J = [(u, M.checker(H, W, tile, 1)) for u, _ in J_eval]
+    out = {}
+    a_old, a_new = M.layer_masks(inp["active"])
+    b_old, b_new = M.layer_masks_birth(inp["t0"], M.birth_split(inp["cur_uid"], inp["loop_uid"]))
+    for name, (mo, mn) in (("active", (a_old, a_new)), ("birth", (b_old, b_new))):
+        Pi = M.eval_pixel_set(st, G_rig, poses_rig, J, mo, mn, cfg)
+        maps = M.gap_maps(st, G_rig, poses_rig, Pi, mo, mn)
+        e, n = M.edl_paired(Pi, {"r": maps})
+        out[name] = {"median_mm": None if e["r"]["median"] is None else 1e3 * e["r"]["median"], "n_pix": n}
+    return out
+
+
 def rigid_result(inp, dT):
     xyz, rot = apply_rigid(inp["g"]["xyz"], inp["g"]["rot"], inp["tc"], dT)
     poses = {u: torch.as_tensor(inp["poses_pgo"][u]).double().cpu() for u in inp["poses_pgo"]}
@@ -146,7 +161,10 @@ def _prepare(inp, cfg, variant, cache=None):
     dT = delta_T_dict(kf_uids, inp["all_cam_ids"], inp["poses_pre"], inp["poses_pgo"])
     xyz_rig, rot_rig, poses_rig = rigid_result(inp, dT)
     G_rig = with_pos(g, xyz_rig, rot_rig)
-    m_old, m_new = M.layer_masks(inp["active"])
+    m_old, m_new, linfo = M.layers_for(inp["active"], inp["t0"], inp.get("cur_uid"), inp.get("loop_uid"), cfg)
+    log["layers"] = linfo
+    if inp.get("cur_uid") is not None and inp.get("loop_uid") is not None:
+        log["layer_split"] = M.layer_split_log(inp["active"], inp["t0"], inp["cur_uid"], inp["loop_uid"])
     alpha = g["opacity"].reshape(-1)
     ctx = {"ts": ts, "log": log, "dt": dt, "dT": dT, "xyz_rig": xyz_rig, "rot_rig": rot_rig,
            "poses_rig": poses_rig, "G_rig": G_rig, "kf_uids": kf_uids, "fallback": None}
@@ -221,6 +239,11 @@ def _prepare(inp, cfg, variant, cache=None):
         return done("no_overlap")
     J_opt, J_eval = M.split_opt_eval(JL, H, W, cfg["corr"]["checker"])
     ctx["J_opt"], ctx["J_eval"] = [u for u, _ in J_opt], [u for u, _ in J_eval]
+    if "layer_split" in log:  # rigid gap of the OTHER split on the same evaluation keyframes (plan v5 A1 log)
+        try:
+            log["layer_split"]["rigid_gap_mm"] = _rigid_gap_both_splits(st_like, G_rig, poses_rig, inp, cfg, J_eval, m_old, m_new, H, W)
+        except Exception as e:  # log only
+            log["layer_split"]["rigid_gap_mm"] = {"error": f"{type(e).__name__}: {e}"}
     log["n_opt_kfs"], log["n_eval_kfs"] = len(J_opt), len(J_eval)
     J_src = pair_sources(J_opt, J_eval, H, W, cfg)
     log["n_src_kfs"] = len(J_src)
@@ -433,4 +456,6 @@ def inp_from_dump(dump, frame_fn):
         "seed": int(dump["meta"].get("seed", 0)),
         # plan v4 A4: frames pinned by a unary prior in the pose graph (older dumps: the first frame)
         "anchor_uids": [int(u) for u in dump.get("anchor_uids", [min(int(x) for x in dump["all_cam_ids"])])],
+        # plan v5 A1: the loop pair of this event (birth-time layer split)
+        "cur_uid": int(dump["meta"]["cur_uid"]), "loop_uid": int(dump["meta"]["loop_uid"]),
     }

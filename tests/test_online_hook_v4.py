@@ -53,8 +53,30 @@ class RealPGO:
         for a, b in zip(ids[:-1], ids[1:]):
             rel = np.linalg.inv(pre[a].double().numpy()) @ pre[b].double().numpy()
             self.graph_factors.add(gtsam.BetweenFactorPose3(gtsam.symbol("x", a), gtsam.symbol("x", b), gtsam.Pose3(rel), cov))
+        # loop factor of this event: the relocalised measurement is not in pre-v5 dumps; use the stored one when present,
+        # else the PGO-implied relative pose (zero residual at the PGO values)
+        cu, lu = int(d["meta"]["cur_uid"]), int(d["meta"]["loop_uid"])
+        if d.get("loop_transform") is not None:
+            lt = np.asarray(d["loop_transform"], dtype=np.float64)
+        else:
+            lt = np.linalg.inv(self.poses[lu].double().numpy()) @ self.poses[cu].double().numpy()
+        self.graph_factors.add(gtsam.BetweenFactorPose3(gtsam.symbol("x", lu), gtsam.symbol("x", cu), gtsam.Pose3(lt), cov))
+        self.loop_factor_index = self.graph_factors.size() - 1
         self.graph_optimized = self.graph_initials
         self.last_error = float(self.graph_factors.error(self.graph_initials))
+
+    def snapshot(self):
+        """[(type, keys, measured 4x4)] of every factor, for the T1/T2 count-order-type-measurement checks."""
+        out = []
+        for i in range(self.graph_factors.size()):
+            f = self.graph_factors.at(i)
+            if f is None:
+                out.append(None)
+                continue
+            t = type(f).__name__
+            m = f.prior().matrix() if t.startswith("PriorFactor") else f.measured().matrix()
+            out.append((t, tuple(int(k) for k in f.keys()), m.copy()))
+        return out
 
     def get_optimized_node_pose(self, idx):
         return self.poses[int(idx)].double().numpy()
@@ -95,7 +117,14 @@ def main():
     be = fake_backend_real_pgo(d, st)
     cur, loop = be.key_cameras[int(d["meta"]["cur_uid"])], be.key_cameras[int(d["meta"]["loop_uid"])]
     e_prior0, e_graph0 = be.pgo.prior_error(), float(be.pgo.graph_factors.error(be.pgo.graph_initials))
+    snap0 = be.pgo.snapshot()
     applied, log0 = backend_correct(be, cur, loop, cfg0)
+    snap1 = be.pgo.snapshot()
+    if cfg["pose_sync"].get("regen_odom", False):
+        dmeas = max(float(np.abs(a[2] - b[2]).max()) for a, b in zip(snap0, snap1) if a is not None and b is not None)
+        same_struct = len(snap0) == len(snap1) and all((a is None) == (b is None) and (a is None or a[:2] == b[:2]) for a, b in zip(snap0, snap1))
+        check("T1_regen_measurements_unchanged", same_struct and dmeas <= 1e-9,
+              f"zero deformation + regen_odom: max |d measured| {dmeas:.2e}, structure unchanged {same_struct}, replaced {log0.get('regen_n_replaced')}")
     xyz_r, _, _ = replay(d, use_online=False)
     inp0 = inp_from_dump(d, st.frame)
     inp0["anchor_uids"] = anchored_uids(be.pgo)
@@ -130,12 +159,28 @@ def main():
     # offline reference 1: the pipeline on exactly the backend's inputs (what the hook feeds correct_map) -> the K4
     # rule tests the hook plumbing (write_back, cameras, gtsam, anchor); reference 2: the pipeline on the dump
     # (dump fidelity; pre-v4 dumps lack the raw parameters, so their activations differ by float32 ulps)
-    inp_be = backend_inp(be, cur)
+    inp_be = backend_inp(be, cur, loop)
+    snap0 = be.pgo.snapshot()
     applied, log = backend_correct(be, cur, loop, cfg)
+    snap1 = be.pgo.snapshot()
+    if cfg["pose_sync"].get("regen_odom", False):
+        same_struct = len(snap0) == len(snap1) and all((a is None) == (b is None) and (a is None or a[:2] == b[:2]) for a, b in zip(snap0, snap1))
+        e_after = float(be.pgo.last_error)
+        by = log.get("gtsam_err_after_sync_by_class") or {}
+        check("T2_regen_graph_err", same_struct and e_after <= 1.2 * max(e_graph0, 1e-9),
+              f"error after PGO {e_graph0:.3f} -> after write {e_after:.3f} (<= 1.2x); replaced {log.get('regen_n_replaced')}/{log.get('regen_n_odom')} odometry factors, "
+              f"moved poses {log.get('regen_n_moved')}; by class prior {by.get('prior')}, odom {by.get('odom')}, loop {by.get('loop')}; "
+              f"loop-k residual {log.get('loop_factor_k_error_after_sync')}; structure unchanged {same_struct}; "
+              f"max |d measured| {log.get('regen_max_dmeas_m')} m / {log.get('regen_max_dmeas_rad')} rad")
+        rep["regen"] = {k: log.get(k) for k in ("regen_n_moved", "regen_n_replaced", "regen_n_odom", "regen_n_loop", "regen_max_dmeas_m",
+                                                "regen_max_dmeas_rad", "gtsam_err_after_sync_by_class", "loop_factor_k_error_after_sync",
+                                                "gtsam_err_before_sync", "gtsam_err_after_sync")}
+    rep["layer_split"] = log.get("layer_split")
     res = correct_map(inp_be, cfg, cfg["variant"])
     inp = inp_from_dump(d, st.frame)
     inp["anchor_uids"] = anchored_uids(be.pgo)
     res_d = correct_map(inp, cfg, cfg["variant"])
+    print("layers:", log.get("layers"), "| split log:", json.dumps(log.get("layer_split"), default=str)[:400])
     if not applied:
         BackEnd.apply_rigid_correction(be)
     xyz_on = be.gaussians.get_xyz.detach()

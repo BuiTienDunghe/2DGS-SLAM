@@ -1,0 +1,29 @@
+# plan v5 candidate (NOT frozen): selected_v5 + layers.mode birth + pose_sync.regen_odom
+mode: deform
+variant: A
+energy:
+  w_p: 1.0
+  w_con: 1.0
+tum:
+  reliability:
+    sigma_D: 0.037
+    sigma_n: 0.34
+replica:
+  reliability:
+    sigma_D: 0.002
+    sigma_n: 0.01
+solver:
+  tol_mode: grad
+corr:
+  s_gate:
+    layers: old
+  select: hash
+  hash_salt: 11400714819323198485
+det:
+  render: true
+  torch: true
+pose_sync:
+  anchor: prior
+  regen_odom: true
+layers:
+  mode: birth

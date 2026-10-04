@@ -43,6 +43,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--config", default=os.path.join(ROOT, "configs", "deform", "selected_v5.yaml"))
     ap.add_argument("--no-offline", action="store_true", help="skip the offline recomputation (rigid runs)")
+    ap.add_argument("--layers", default="config", choices=["config", "active", "birth"],
+                    help="layer split for Pi*: config = the deform config's layers.mode, active (v2/v3 metric), birth (t0 split)")
     ap.add_argument("runs", nargs="+")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
@@ -55,7 +57,11 @@ def main():
             st = EventState(d)
             cfg = dcfg.resolve(user, st.config)
             cfg["seed"] = int(st.meta.get("seed", 0))
-            m_old, m_new = M.layer_masks(st.active)
+            mode = a.layers if a.layers != "config" else (cfg.get("layers") or {}).get("mode", "active")
+            if mode == "birth":
+                m_old, m_new = M.layer_masks_birth(st.gpre["t0"], M.birth_split(st.meta["cur_uid"], st.meta["loop_uid"]))
+            else:
+                m_old, m_new = M.layer_masks(st.active)
             H, W = int(st.intr["H"]), int(st.intr["W"])
             G_pre = gauss_from_dump(st.gpre)
             # rigid reference exactly like the pipeline (same dT formula)
@@ -65,7 +71,7 @@ def main():
             xyz_rig, rot_rig, poses_rig = rigid_result(inp, dT)
             G_rig = with_pos(G_pre, xyz_rig, rot_rig)
             JL, _ = M.select_loop_kfs(st, G_rig, poses_rig, m_old, m_new, cfg)
-            row = {"run": os.path.basename(rd), "dump": os.path.basename(p), "event_id": st.meta["event_id"],
+            row = {"layers": mode, "run": os.path.basename(rd), "dump": os.path.basename(p), "event_id": st.meta["event_id"],
                    "cur": st.meta["cur_uid"], "loop": st.meta["loop_uid"], "mode": st.meta.get("mode"),
                    "n_loop_kfs": len(JL), "raw_params": "scale_raw" in st.gpre}
             lg = d.get("deform_log") or {}

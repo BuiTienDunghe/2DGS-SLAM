@@ -56,6 +56,44 @@ def layer_masks(active):
     return ~a, a  # old = inactive before reactivation, new = active
 
 
+def birth_split(cur_uid, loop_uid):
+    """plan v5 A1: s_k = (loop_uid + cur_uid) / 2."""
+    return 0.5 * (float(cur_uid) + float(loop_uid))
+
+
+def layer_masks_birth(t0, split):
+    t = t0.to(DEV).reshape(-1).float()
+    return t < split, t >= split
+
+
+def layers_for(active, t0, cur_uid, loop_uid, cfg):
+    """(m_old, m_new, info) for the configured layer mode (layers.mode active | birth)."""
+    mode = (cfg.get("layers") or {}).get("mode", "active")
+    if mode == "birth":
+        s = birth_split(cur_uid, loop_uid)
+        mo, mn = layer_masks_birth(t0, s)
+        return mo, mn, {"mode": "birth", "split_t0": s}
+    if mode != "active":
+        raise ValueError(f"layers.mode must be active or birth, got {mode!r}")
+    mo, mn = layer_masks(active)
+    return mo, mn, {"mode": "active"}
+
+
+def layer_split_log(active, t0, cur_uid, loop_uid):
+    """Both splits side by side: counts per layer and the overlap of the 'new' layers (plan v5 A1 log)."""
+    a_old, a_new = layer_masks(active)
+    s = birth_split(cur_uid, loop_uid)
+    b_old, b_new = layer_masks_birth(t0, s)
+    inter_new = int((a_new & b_new).sum())
+    union_new = int((a_new | b_new).sum())
+    return {"split_t0": s,
+            "active": {"old": int(a_old.sum()), "new": int(a_new.sum())},
+            "birth": {"old": int(b_old.sum()), "new": int(b_new.sum())},
+            "new_overlap_jaccard": inter_new / max(1, union_new),
+            "active_new_born_before_split": int((a_new & b_old).sum()),
+            "birth_new_inactive": int((b_new & a_old).sum())}
+
+
 def render_layers(cam, G, m_old, m_new):
     po = render_subset(cam, G, m_old)
     pn = render_subset(cam, G, m_new)

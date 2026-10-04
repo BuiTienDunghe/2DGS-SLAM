@@ -7,6 +7,7 @@ import json
 import os
 import time
 
+import numpy as np
 import torch
 import yaml
 
@@ -129,7 +130,31 @@ def snapshot_pre(backend, cur_camera, loop_camera):
         "inactive_cam_id_list": [int(u) for u in backend.inactive_cam_id_list],
         "cam_sliding_window": [int(u) for u in backend.cam_sliding_window],
         "anchor_uids": _anchor_uids(backend),
+        # plan v5: what the offline PGO replay needs (relocalised loop camera, measurement, all factors)
+        "loop_cam_pose": c2w(loop_camera),
+        "loop_transform": torch.from_numpy(np.linalg.inv(c2w(loop_camera).numpy()) @ c2w(cur_camera).numpy()),
+        "graph_factors": _factor_list(backend),
     }
+
+
+def _factor_list(backend):
+    """[(type, [uids], measured 4x4 (list), sigmas (list))] for every non-null factor, in graph order."""
+    try:
+        import gtsam
+        g = backend.pgo.graph_factors
+        out = []
+        for i in range(g.size()):
+            f = g.at(i)
+            if f is None:
+                out.append(None)
+                continue
+            ks = [int(gtsam.Symbol(k).index()) for k in f.keys()]
+            t = type(f).__name__
+            meas = f.prior().matrix() if t.startswith("PriorFactor") else f.measured().matrix()
+            out.append((t, ks, meas.tolist(), f.noiseModel().sigmas().tolist()))
+        return out
+    except Exception as e:
+        return [("error", str(e))]
 
 
 def _anchor_uids(backend):
