@@ -660,6 +660,10 @@ class BackEnd(mp.Process):
                 elif data[0] == "unpause":
                     self.pause = False
 
+                elif data[0] == "dump":
+                    # plan v6 quick (E5): state dump at a revisit burst, asked by the frontend (record only)
+                    loop_dump.save_revisit_dump(self, data)
+
                 elif data[0] == "init":
                     init_camera, init_frame= data[1], data[2]
                     self.key_frames[init_frame.camera_id] = init_frame

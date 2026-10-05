@@ -1,0 +1,5 @@
+# plan v6 quick: code-path smoke of the E5 switches only (lower gate so that revisit bursts happen early)
+inherit_from: "configs/tum/v6q/fr1_room_E5.yaml"
+
+Training:
+  loop_overlap_ratio: 0.2

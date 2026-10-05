@@ -193,6 +193,57 @@ def event_record(backend, cur_camera, loop_camera, pgo_err_before, t_fix_s, defo
     return rec
 
 
+def save_revisit_dump(backend, data):
+    """plan v6 quick (E5): map + poses at a revisit burst (no PGO, no correction), written between two mapping
+    iterations. Same layout as a loop-event dump (gauss_pre, poses_pre = poses_pgo, meta.cur_uid = the requesting
+    frame, meta.loop_uid = the candidate keyframe) so that deform.dump.EventState / inp_from_dump read it; the tracked
+    pose of the requesting frame (it need not be a keyframe) is in dump["request"]."""
+    if not backend.run_dir or not backend.key_cameras:
+        return None
+    t0 = time.perf_counter()
+    _, uid, tag, pose_c2w, gt, info = data
+    d = os.path.join(backend.run_dir, "revisit_dumps")
+    os.makedirs(d, exist_ok=True)
+    cfg = backend.config
+    n = getattr(backend, "revisit_dump_count", 0) + 1
+    backend.revisit_dump_count = n
+    cand = info.get("cand_kf")
+    kf_uids = sorted(int(u) for u in backend.key_cameras.keys())
+    poses = {int(u): c2w(c) for u, c in backend.all_cameras.items()}
+    dump = {
+        "gauss_pre": gaussian_state(backend.gaussians),
+        "poses_pre": poses,
+        "poses_pgo": poses,
+        "poses_pre_kf": {int(u): c2w(c) for u, c in backend.key_cameras.items()},
+        "poses_gt": {int(u): gt_c2w(c) for u, c in backend.all_cameras.items()},
+        "keyframe_uids": kf_uids,
+        "all_cam_ids": [int(u) for u in backend.all_cam_ids],
+        "cam_meta": {int(u): cam_meta(c) for u, c in backend.key_cameras.items()},
+        "intrinsics": intrinsics(backend.key_cameras[kf_uids[-1]]),
+        "active_cam_id_list": [int(u) for u in backend.active_cam_id_list],
+        "inactive_cam_id_list": [int(u) for u in backend.inactive_cam_id_list],
+        "cam_sliding_window": [int(u) for u in backend.cam_sliding_window],
+        "anchor_uids": _anchor_uids(backend),
+        "request": {"uid": int(uid), "tag": tag, "pose_c2w": torch.as_tensor(pose_c2w).double(),
+                    "gt_c2w": None if gt is None else torch.as_tensor(gt).double(), "cand_kf": cand,
+                    "observed_ratio": info.get("observed_ratio"), "latest_kf_uid": kf_uids[-1]},
+        "meta": {"event_id": n, "frame_idx": int(uid), "cur_uid": int(uid), "loop_uid": -1 if cand is None else int(cand),
+                 "scene": f'{cfg["Dataset"]["type"]}/{cfg["Dataset"]["sequence_name"]}', "seed": backend.seed,
+                 "mode": "revisit", "variant": None, "wall_time": time.time(),
+                 "old_than_N_keyframe": int(backend.old_than_N_keyframe)},
+        "config": cfg,
+    }
+    path = os.path.join(d, f'rv_{n:03d}_{tag}_f{int(uid)}_k{dump["meta"]["loop_uid"]}.pt')
+    torch.save(dump, path)
+    dt = time.perf_counter() - t0
+    backend.revisit_dump_time_s = getattr(backend, "revisit_dump_time_s", 0.0) + dt
+    append_jsonl(backend.run_dir, "revisit_dumps.jsonl", {
+        "n": n, "uid": int(uid), "tag": tag, "cand_kf": cand, "observed_ratio": info.get("observed_ratio"),
+        "latest_kf_uid": kf_uids[-1], "n_gauss": int(dump["gauss_pre"]["xyz"].shape[0]), "t_dump_s": dt,
+        "t_total_s": backend.revisit_dump_time_s, "file": os.path.basename(path), "wall_time": time.time()})
+    return path
+
+
 def save_dump(backend, pre, event):
     """Write pre + post (after correction, BEFORE update_state) to loop_dumps/."""
     if not backend.run_dir:

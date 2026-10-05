@@ -156,6 +156,26 @@ class FrontEnd(mp.Process):
         self.loop_closure_check_every = max(1, int(tr.get("loop_closure_check_every", 1)))
         self.enable_loop_closure = tr.get("enable_loop_closure", True)
 
+        # plan v6 quick (E5), all default off. allow_kf0: keyframe 0 is a valid loop candidate (-1 = no loop;
+        # upstream tests `loop_id > 0`). log_checks: loop_checks.jsonl / mast3r_calls.jsonl. revisit_dump: ask the
+        # backend for a state dump at revisit bursts (first gate-passing frame after >= burst_gap tracked frames
+        # that did not pass, then every dump_every tracked frames of the burst, at most dump_max per burst).
+        lp = self.config.get("loop") or {}
+        self.allow_kf0 = bool(lp.get("allow_kf0", False))
+        self.min_loop_id = 0 if self.allow_kf0 else 1
+        if self.allow_kf0:
+            self.last_loop_id = -1
+        self.log_loop_checks = bool(lp.get("log_checks", False))
+        self.revisit_dump = bool(lp.get("revisit_dump", False))
+        self.rv_burst_gap = int(lp.get("burst_gap", 3))
+        self.rv_dump_every = int(lp.get("dump_every", 10))
+        self.rv_dump_max = int(lp.get("dump_max", 3))
+        self._rv_nopass = 10 ** 9  # tracked frames since the last gate pass
+        self._rv_pos = 0           # tracked frames since the burst began
+        self._rv_dumps = 0
+        self._rv_burst = 0
+        self._rv_last = None       # result of the last revisit check
+
         self.resized_w, self.resized_h = self.dust3r.input_img_size
         self.resized_K = self.dust3r.resized_K
 
@@ -641,6 +661,7 @@ class FrontEnd(mp.Process):
         observed_ratio = valid_mask.sum()/(valid_mask.shape[1] * valid_mask.shape[2])
         observed_ratio_f = observed_ratio.item()
 
+        self._rv_last = {"observed_ratio": observed_ratio_f, "pass": bool(observed_ratio > self.loop_overlap_ratio), "cand_kf": None}
         if observed_ratio > self.loop_overlap_ratio:
             # find the frame who observe most inactive gaussians in current view
             active_mask = self.gaussians.get_active_mask.squeeze(1)
@@ -651,6 +672,7 @@ class FrontEnd(mp.Process):
             contribution_sums.scatter_add_(0, inverse_indices, contributions)
             max_index = torch.argmax(contribution_sums)
             loop_id = unique_ids[max_index].item()
+            self._rv_last["cand_kf"] = int(loop_id)
             if self.verbose:
                 Log(
                     f"revisit: PASS geometric gate — observed_ratio={observed_ratio_f:.4f} "
@@ -659,6 +681,16 @@ class FrontEnd(mp.Process):
                 )
             return loop_id
 
+        if self.log_loop_checks and observed_ratio_f > 0.3:  # record only: the candidate a lower gate would give
+            try:
+                na_ids = self.gaussians.get_ids[~self.gaussians.get_active_mask.squeeze(1)].squeeze(1)
+                if na_ids.numel() > 0:
+                    u_ids, inv = torch.unique(na_ids, return_inverse=True)
+                    sums = torch.zeros_like(u_ids, device=contributions.device, dtype=contributions.dtype)
+                    sums.scatter_add_(0, inv, contributions)
+                    self._rv_last["cand_kf"] = int(u_ids[torch.argmax(sums)].item())
+            except Exception as e:
+                self._rv_last["cand_error"] = str(e)
         if self.verbose and observed_ratio_f > self.loop_overlap_ratio * 0.85:
             Log(
                 f"revisit: FAIL geometric gate (near miss) — observed_ratio={observed_ratio_f:.4f} "
@@ -667,11 +699,63 @@ class FrontEnd(mp.Process):
             )
         return -1
 
+    def request_dump(self, camera, tag, info):
+        """plan v6 quick (E5): ask the backend for a state dump; never waits for an answer."""
+        gt = loop_dump.gt_c2w(camera)
+        msg = ['dump', int(camera.uid), tag, loop_dump.c2w(camera).numpy(), None if gt is None else gt.numpy(), dict(info)]
+        self.backend_queue.put(msg)
+
+    def _note_revisit_check(self, query_camera):
+        """plan v6 quick (E5), record only: one loop_checks.jsonl line per revisit check + burst bookkeeping."""
+        st = self._rv_last or {}
+        tag = None
+        if st.get("pass"):
+            if self._rv_nopass >= self.rv_burst_gap:  # a new burst
+                self._rv_burst += 1
+                self._rv_pos = 0
+                self._rv_dumps = 0
+            else:
+                self._rv_pos += 1
+            self._rv_nopass = 0
+            if self.revisit_dump and self._rv_dumps < self.rv_dump_max and self._rv_pos >= self.rv_dump_every * self._rv_dumps:
+                self._rv_dumps += 1
+                tag = f"b{self._rv_burst:02d}_{self._rv_dumps}"
+                self.request_dump(query_camera, tag, st)
+        else:
+            self._rv_nopass += 1
+            if self._rv_nopass < self.rv_burst_gap:
+                self._rv_pos += 1
+        if st.get("cand_kf") == 0 and self.verbose:
+            Log(f"revisit: candidate is keyframe 0 (observed_ratio={st.get('observed_ratio', 0):.4f}, allow_kf0={self.allow_kf0})", tag="Loop")
+        if self.log_loop_checks:
+            in_burst = self._rv_nopass < self.rv_burst_gap
+            loop_dump.append_jsonl(self.save_dir, "loop_checks.jsonl", {
+                "path": "revisit", "frame": int(query_camera.uid), "n_kf": len(self.key_frame_ids),
+                "observed_ratio": st.get("observed_ratio"), "pass": bool(st.get("pass")), "cand_kf": st.get("cand_kf"),
+                "burst": self._rv_burst if in_burst else None, "burst_pos": self._rv_pos if in_burst else None, "dump": tag})
+
+    def _note_featquery_candidate(self, query_camera, loop_id):
+        if loop_id == 0 and self.verbose:
+            Log(f"featquery: candidate is keyframe 0 (allow_kf0={self.allow_kf0})", tag="Loop")
+        loop_dump.append_jsonl(self.save_dir, "loop_checks.jsonl", {
+            "path": "featquery", "frame": int(query_camera.uid), "n_kf": len(self.key_frame_ids), "cand_kf": int(loop_id)})
+
+    def _note_mast3r(self, cur_cam, loop_id, loop_type, result, mean_conf=None, overlap=None, depth_err=None):
+        if getattr(self, "log_loop_checks", False):
+            loop_dump.append_jsonl(self.save_dir, "mast3r_calls.jsonl", {
+                "frame": int(cur_cam.uid), "loop_kf": int(loop_id), "path": loop_type, "result": result,
+                "mean_conf": mean_conf, "overlap_ratio": overlap, "depth_avg_error": depth_err})
+
     def is_this_loop_necessary(self, new_loop_id):
         if (len(self.key_frame_ids) - self.last_loop_at_len_kf) >= self.old_than_N_keyframe:
             return True, (
                 f"allowed: {len(self.key_frame_ids) - self.last_loop_at_len_kf} keyframes "
                 f"since last loop (>= {self.old_than_N_keyframe})"
+            )
+        if self.last_loop_id < 0:  # loop.allow_kf0, no loop yet (upstream: last_loop_id = 0 -> idx_gap <= 0 -> throttled)
+            return False, (
+                f"throttled: kfs_since_last_loop={len(self.key_frame_ids) - self.last_loop_at_len_kf} "
+                f"(need >= {self.old_than_N_keyframe}), no loop yet"
             )
         new_loop_idx = self.key_frame_ids.index(new_loop_id)
         last_loop_idx = self.key_frame_ids.index(self.last_loop_id)
@@ -692,7 +776,9 @@ class FrontEnd(mp.Process):
             return None
         if self.enable_revisit_loop:
             loop_id = self.detect_loop_by_revisit(query_depth, query_camera)
-            if loop_id > 0:
+            if self.log_loop_checks or self.revisit_dump:
+                self._note_revisit_check(query_camera)
+            if loop_id >= self.min_loop_id:
                 ok, why = self.is_this_loop_necessary(loop_id)
                 if self.verbose:
                     Log(
@@ -722,7 +808,9 @@ class FrontEnd(mp.Process):
             Log("revisit: disabled (enable_revisit_loop=False), skipping", tag="Loop")
 
         loop_id = self.detect_loop_by_featquery(query_resized_img, query_camera)
-        if loop_id > 0:
+        if self.log_loop_checks and loop_id >= 0:
+            self._note_featquery_candidate(query_camera, loop_id)
+        if loop_id >= self.min_loop_id:
             ok, why = self.is_this_loop_necessary(loop_id)
             if self.verbose:
                 Log(
@@ -934,6 +1022,7 @@ class FrontEnd(mp.Process):
         
         loop_cam = clone_obj(self.cameras[loop_id])
         loop_frame = self.key_frames[loop_id]
+        mean_conf = ov = None
 
         if self.verbose:
             Log(
@@ -954,6 +1043,7 @@ class FrontEnd(mp.Process):
                         f"mean_conf={mean_conf:.4f} (need >= 3.0) loop_kf={loop_id}",
                         tag="Loop",
                     )
+                self._note_mast3r(cur_cam, loop_id, loop_type, "reject_conf", mean_conf)
                 return None
             if self.verbose:
                 Log(
@@ -975,6 +1065,7 @@ class FrontEnd(mp.Process):
                         f"overlap_ratio={ov:.4f} (need >= {self.loop_overlap_ratio}) loop_kf={loop_id}",
                         tag="Loop",
                     )
+                self._note_mast3r(cur_cam, loop_id, loop_type, "reject_overlap", mean_conf, ov)
                 return None
             if self.verbose:
                 Log(
@@ -1025,6 +1116,7 @@ class FrontEnd(mp.Process):
                     f"depth_avg_error={derr:.5f} (threshold {self.depth_error_threshold}) loop_kf={loop_id}",
                     tag="Loop",
                 )
+            self._note_mast3r(cur_cam, loop_id, loop_type, "reject_tracking", mean_conf, ov, derr)
             return None
 
         if self.verbose:
@@ -1034,6 +1126,7 @@ class FrontEnd(mp.Process):
                 tag="Loop",
             )
 
+        self._note_mast3r(cur_cam, loop_id, loop_type, "accepted", mean_conf, ov, derr)
         return loop_cam
     
 

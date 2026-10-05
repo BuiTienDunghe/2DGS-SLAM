@@ -1,0 +1,10 @@
+# plan v6 quick, E5: baseline rigid run + keyframe-0 loop fix + loop logs + revisit-burst dumps
+inherit_from: "configs/tum/fr1_room.yaml"
+
+loop:
+  allow_kf0: true
+  log_checks: true
+  revisit_dump: true
+  burst_gap: 3
+  dump_every: 10
+  dump_max: 3
