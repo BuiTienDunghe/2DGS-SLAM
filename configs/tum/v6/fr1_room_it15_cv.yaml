@@ -1,0 +1,6 @@
+# plan v6 R7: tracking capped at 15 iterations, constant-velocity initialisation
+inherit_from: "configs/tum/fr1_room.yaml"
+
+Training:
+  tracking_itr_num: 15
+  init_mode: "const_vel"

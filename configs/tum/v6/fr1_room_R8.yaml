@@ -1,0 +1,5 @@
+# plan v6 R8 (generated): R6 plus a sleep after tracking
+inherit_from: "configs/tum/v6/fr1_room_it30_cv.yaml"
+
+Training:
+  track_pad_ms: 1157

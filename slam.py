@@ -395,7 +395,11 @@ def main(
     rs["deform_config_path"] = str(deform_config) if deform_config is not None else None
 
     seed_everything(int(seed))
-    SLAM(cfg).run()
+    slam = SLAM(cfg)
+    # plan v6 C9 (record-only): HEAD, uncommitted diff and resolved config next to the results
+    from utils import code_state
+    code_state.record(cfg["Results"].get("run_dir"), cfg)
+    slam.run()
     Log("Done.")
 
 

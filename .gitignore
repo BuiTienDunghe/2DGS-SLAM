@@ -38,5 +38,6 @@ bak/
 
 # experiment outputs, local backups and notes
 results_exp/
+results_m/
 runs/
 .cache/

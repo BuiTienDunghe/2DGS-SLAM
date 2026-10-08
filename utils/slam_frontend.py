@@ -153,6 +153,17 @@ class FrontEnd(mp.Process):
         self.enable_mast3r_reloc = tr.get("enable_mast3r_reloc", True)
         self.pgo_with_all_frames = tr.get("pgo_with_all_frames", True)
         self.use_odom_init_guess = tr.get("use_odom_init_guess", False)
+        # plan v6 (core measurement). Defaults keep the original behaviour; core_log only records.
+        self.init_mode = str(tr.get("init_mode", "prev"))
+        if self.init_mode not in ("prev", "const_vel"):
+            raise ValueError(f"Training.init_mode must be 'prev' or 'const_vel', got {self.init_mode!r}")
+        self.track_pad_ms = float(tr.get("track_pad_ms", 0.0))
+        self.core_log = bool(rs.get("core_log", True))
+        self._pgo_synced = False
+        self._init_mode_used = None
+        self._track_records = []
+        self._tl_prev_done = None
+        self._tl_acc = {"t_sync": 0.0, "t_eval": 0.0, "t_log": 0.0, "n_msg": 0}
         self.loop_closure_check_every = max(1, int(tr.get("loop_closure_check_every", 1)))
         self.enable_loop_closure = tr.get("enable_loop_closure", True)
 
@@ -492,7 +503,63 @@ class FrontEnd(mp.Process):
             Log(f"init first_kf={first_id}", tag="Track")
     
 
-    def tracking(self, camera, gt_img, depth, grad_mask, tracking_mask=None, render_option='active', itr_num=None):
+    def _flush_track_log(self, frame_idx):
+        """plan v6 X2: write the tracking records gathered for this frame; called outside every timed section."""
+        recs, self._track_records = self._track_records, []
+        for r in recs:
+            poses = torch.stack([r["T_init"]] + r["ckpt_T"] + [r["T_final"]]).detach().double().cpu()
+            poses = poses[:, :3, :].reshape(poses.shape[0], 12).tolist()
+            loss = torch.stack(r["ckpt_loss"]).double().cpu().tolist() if r["ckpt_loss"] else []
+            loop_dump.append_jsonl(self.save_dir, "track_log.jsonl", {
+                "frame": int(frame_idx), "uid": r["uid"], "purpose": r["purpose"], "loop_id": r["loop_id"],
+                "init_mode": r["init_mode"], "n_iter": r["n_iter"], "iters_done": r["iters_done"],
+                "converged": bool(r["converged"]), "t_iters_s": r["t_iters_s"],
+                "T_init": poses[0], "ckpt_iters": r["ckpt_iters"], "T_ckpt": poses[1:-1], "T_final": poses[-1],
+                "loss_ckpt": loss,
+            })
+
+    def _frame_log_done(self, uid, tf, kf_src, loop_uid, after_pgo):
+        """plan v6 X1: one timing.jsonl line per tracked frame (perf_counter, no cuda synchronize; record-only).
+
+        t_total = time between two consecutive frame completions. t_stall = everything before this frame's
+        data loading (waiting for the backend, consuming its messages, the previous frame's log writes).
+        """
+        now = time.perf_counter()
+        if not self.core_log:
+            return
+        t_w0 = now
+        try:
+            acc, prev = self._tl_acc, self._tl_prev_done
+            trk = [r for r in self._track_records if r["purpose"] == "track"]
+            rel = [r for r in self._track_records if r["purpose"] != "track"]
+            t_eval = tf.get("t_eval", 0.0)
+            rec = {
+                "uid": int(uid), "first_after_init": prev is None, "kf_src": kf_src, "loop_uid": loop_uid,
+                "init_mode": self._init_mode_used, "after_pgo": bool(after_pgo),
+                "iters_done": trk[0]["iters_done"] if trk else None, "n_iter": trk[0]["n_iter"] if trk else None,
+                "t_track_iters": trk[0]["t_iters_s"] if trk else None,
+                "n_reloc": len(rel), "t_reloc_iters": sum(r["t_iters_s"] for r in rel),
+                "t_stall": (tf["t0"] - prev) if prev is not None else None,
+                "t_sync": acc["t_sync"], "t_eval_stall": acc["t_eval"], "t_log": acc["t_log"], "n_msg": acc["n_msg"],
+                "t_data": tf["t1"] - tf["t0"], "t_track": tf["t2"] - tf["t1"], "t_pad": tf["t2p"] - tf["t2"],
+                "t_loop": tf["t3"] - tf["t2p"], "t_kf": now - tf["t3"] - t_eval, "t_eval": t_eval,
+                "t_total": (now - prev) if prev is not None else None,
+                "n_kf": len(self.key_frame_ids), "wall_time": time.time(),
+            }
+            if prev is not None:
+                parts = (rec["t_stall"] + rec["t_data"] + rec["t_track"] + rec["t_pad"] + rec["t_loop"]
+                         + rec["t_kf"] + rec["t_eval"])
+                rec["t_other"] = rec["t_total"] - parts
+            loop_dump.append_jsonl(self.save_dir, "timing.jsonl", rec)
+            self._flush_track_log(uid)
+        except Exception as e:
+            Log(f"core log failed at frame {uid}: {e}", tag="Track")
+            self._track_records = []
+        self._tl_prev_done = now
+        self._tl_acc = {"t_sync": 0.0, "t_eval": 0.0, "t_log": time.perf_counter() - t_w0, "n_msg": 0}
+
+    def tracking(self, camera, gt_img, depth, grad_mask, tracking_mask=None, render_option='active', itr_num=None,
+                 purpose="track", loop_id=None):
         opt_params = []
         opt_params.append({"params": [camera.cam_rot_delta], "lr": self.rot_lr})
         opt_params.append({"params": [camera.cam_trans_delta], "lr": self.trans_lr})
@@ -516,6 +583,14 @@ class FrontEnd(mp.Process):
 
         n_iter = self.tracking_itr_num if itr_num is None else int(itr_num)
         iters_done = 0
+        # plan v6 X2 (record-only): pose at start, every 5 iterations and at the end; tensors stay on the GPU
+        # here and are written by _flush_track_log after the frame's timers have stopped
+        log_track = self.core_log
+        converged = False
+        if log_track:
+            T_init = camera.T.detach().clone()
+            ckpt_iters, ckpt_T, ckpt_loss = [], [], []
+            t_iters0 = time.perf_counter()
         for i in range(n_iter):
             render_pkg = render_for_tracking(camera, g_xyz, g_opacity, g_scales, g_rotations, g_shs,
                                              self.gaussians.active_sh_degree, bg_color=self.bg_color)
@@ -553,9 +628,24 @@ class FrontEnd(mp.Process):
             with torch.no_grad():
                 converged = camera.update_pose()
                 iters_done = i + 1
+                if log_track and iters_done % 5 == 0:
+                    # update_pose() rebinds camera.T to a fresh detached tensor, so keeping the reference is enough
+                    ckpt_iters.append(iters_done)
+                    ckpt_T.append(camera.T)
+                    ckpt_loss.append(loss.detach())
                 if converged:
                     break
-        
+
+        if log_track:
+            self._track_records.append({
+                "uid": int(camera.uid), "purpose": purpose, "loop_id": loop_id,
+                "init_mode": self._init_mode_used if purpose == "track" else None,
+                "n_iter": n_iter, "iters_done": iters_done, "converged": converged,
+                "t_iters_s": time.perf_counter() - t_iters0,
+                "T_init": T_init, "ckpt_iters": ckpt_iters, "ckpt_T": ckpt_T, "ckpt_loss": ckpt_loss,
+                "T_final": camera.T,
+            })
+
         if self.verbose:
             early = f" early" if 0 < iters_done < n_iter else ""
             Log(f"track frame={camera.uid} iters={iters_done}/{n_iter}{early}", tag="Track")
@@ -1106,6 +1196,7 @@ class FrontEnd(mp.Process):
             loop_cam, loop_frame.rgb, loop_frame.depth,
             grad_mask, loop_tracking_mask, render_option='active',
             itr_num=self.reloc_tracking_itr_num,
+            purpose="reloc", loop_id=int(loop_id),
         )
 
         derr = float(depth_avg_error.detach())
@@ -1376,19 +1467,38 @@ class FrontEnd(mp.Process):
                         time.sleep(0.01)
                         continue
                     
+                    tf = {"t0": time.perf_counter()}  # plan v6 X1: frame timers (record-only)
                     original_img, pil_img, depth, gt_pose = self.dataset[cur_frame_idx]
 
                     last_idx = cur_frame_idx - step
+                    after_pgo, self._pgo_synced = self._pgo_synced, False
+                    self._init_mode_used = "prev"
                     if self.use_odom_init_guess:
                         prev_gt_pose = self.cameras[last_idx].gt_pose
                         if prev_gt_pose is not None and gt_pose is not None:
                             odom_rel = gt_pose @ torch.linalg.inv(prev_gt_pose)
                             init_pose = odom_rel @ self.cameras[last_idx].T
+                            self._init_mode_used = "gt_odom"
                         else:
                             init_pose = self.cameras[last_idx].T
+                    elif self.init_mode == "const_vel":
+                        # plan v6 X4: T0_t = T_a T_b^-1 T_a (w2c), a/b = the two most recently tracked frames;
+                        # plain "prev" right after a PGO sync (poses just moved) and while only one frame exists
+                        prev2_idx = last_idx - step
+                        if after_pgo:
+                            init_pose = self.cameras[last_idx].T
+                            self._init_mode_used = "prev_after_pgo"
+                        elif prev2_idx not in self.cameras:
+                            init_pose = self.cameras[last_idx].T
+                            self._init_mode_used = "prev_first"
+                        else:
+                            T_a = self.cameras[last_idx].T
+                            T_b = self.cameras[prev2_idx].T
+                            init_pose = T_a @ torch.linalg.inv(T_b) @ T_a
+                            self._init_mode_used = "const_vel"
                     else:
                         init_pose = self.cameras[last_idx].T
-    
+
                     cur_cam = Camera(cur_frame_idx, init_pose, gt_pose, self.dataset.K, self.dataset.height, self.dataset.width)
                     grad_mask, rgb_pixel_mask = self.compute_grad_mask(original_img)
                     depth_mask = torch.logical_and(depth > self.min_depth, depth < self.max_depth)
@@ -1401,10 +1511,16 @@ class FrontEnd(mp.Process):
                         depth_mapping_mask=depth_mapping_mask,
                     )
     
+                    tf["t1"] = time.perf_counter()
                     render_pkg, _ = self.tracking(cur_cam, original_img, depth, grad_mask=grad_mask)
-    
+                    tf["t2"] = time.perf_counter()
+                    if self.track_pad_ms > 0:
+                        # plan v6 X6 (run R8 only): give the backend the wall time a 120-iteration tracker would
+                        time.sleep(self.track_pad_ms / 1000.0)
+                    tf["t2p"] = time.perf_counter()
+
                     self.cameras[cur_frame_idx] = cur_cam
-    
+
                     if self.enable_loop_closure:
                         resized_img = self.dust3r.preprocess(pil_img)
                         k_track = (cur_frame_idx - self.frame_begin) // self.frame_step
@@ -1415,7 +1531,9 @@ class FrontEnd(mp.Process):
                     else:
                         resized_img = None
                         loop_cam = None
-    
+                    tf["t3"] = time.perf_counter()
+                    kf_src = None
+
                     if loop_cam is not None :
                         self.last_loop_at_len_kf = len(self.key_frame_ids)
                         self.last_loop_id = loop_cam.uid
@@ -1434,12 +1552,15 @@ class FrontEnd(mp.Process):
                         self.request_pgo(cur_cam, cur_frame, loop_cam)
     
                         self.requested_pgo += 1
-    
+
+                        t_e0 = time.perf_counter()
                         self.eval_pose(cur_frame_idx, quiet=not self.verbose)
-    
+                        tf["t_eval"] = time.perf_counter() - t_e0
+
                         cur_frame_idx += step
                         pbar.update(1)
                         pbar.set_postfix(kf=len(self.key_frame_ids), frame=cur_frame_idx)
+                        self._frame_log_done(cur_frame_idx - step, tf, "loop", int(loop_cam.uid), after_pgo)
                         continue
 
 
@@ -1462,9 +1583,12 @@ class FrontEnd(mp.Process):
                         self.request_key_frame(cur_cam, cur_frame, self.loop_frame_ids)
                     
                         self.requested_keyframe += 1
-    
+                        kf_src = "odom"
+
                         if len(self.key_frame_ids) % self.save_trj_kf_intv == 0:
+                            t_e0 = time.perf_counter()
                             self.eval_pose(cur_frame_idx, quiet=not self.verbose)
+                            tf["t_eval"] = time.perf_counter() - t_e0
 
                     else:
                         if self.pgo_with_all_frames:
@@ -1535,24 +1659,36 @@ class FrontEnd(mp.Process):
     
                     if cur_frame_idx % 10 == 0:
                         torch.cuda.empty_cache()
+                    self._frame_log_done(cur_frame_idx - step, tf, kf_src, None, after_pgo)
                 else:
+                    t_q0 = time.perf_counter()
                     data = self.frontend_queue.get()
                     if data[0] == "sync_backend":
                         self.sync_backend(data)
-    
+                        self._tl_acc["t_sync"] += time.perf_counter() - t_q0
+                        self._tl_acc["n_msg"] += 1
+
                     elif data[0] == "keyframe":
                         self.sync_backend(data)
                         self.requested_keyframe -= 1
-    
+                        self._tl_acc["t_sync"] += time.perf_counter() - t_q0
+                        self._tl_acc["n_msg"] += 1
+
                     elif data[0] == "pgo":
                         self.sync_backend(data)
+                        t_e0 = time.perf_counter()
                         self.eval_pose(cur_frame_idx, quiet=not self.verbose)
                         self.requested_pgo -= 1
-    
+                        # plan v6 X4: every pose was just replaced by the PGO result -> next frame starts from "prev"
+                        self._pgo_synced = True
+                        self._tl_acc["t_sync"] += t_e0 - t_q0
+                        self._tl_acc["t_eval"] += time.perf_counter() - t_e0
+                        self._tl_acc["n_msg"] += 1
+
                     elif data[0] == "init":
                         self.sync_backend(data)
                         self.requested_init = False
-    
+
                     elif data[0] == 'refine':
                         self.sync_backend(data)
                         ate_kf = self.eval_pose_keyframes_final()

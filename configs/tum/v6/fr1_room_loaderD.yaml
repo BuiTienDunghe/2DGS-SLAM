@@ -1,0 +1,6 @@
+# plan v6 R3, loader mode D: RGB and depth both undistorted with the calibrated model (depth: nearest)
+inherit_from: "configs/tum/fr1_room.yaml"
+
+Dataset:
+  Calibration:
+    depth_undistort: True
