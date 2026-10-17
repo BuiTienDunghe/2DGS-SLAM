@@ -25,6 +25,7 @@ from gaussian_splatting.utils.graphics_utils import getWorld2View2
 from utils.camera_utils import Camera
 from gaussian_splatting.utils.camera_utils import SE3_exp
 from utils.plane_anchor import PlaneAnchorMap, PlaneExtractor
+from utils.obs_decouple import DecoupledPoseStep
 from utils.e1_logging import E1Logger
 
 from utils.eval_utils import (
@@ -452,7 +453,7 @@ class FrontEnd(mp.Process):
             ms_ext = 1000 * (time.perf_counter() - t_p)
             self.plane_anchors.update_at_keyframe(first_id, planes, [], cam_start.T)
             plane_info = dict(planes=planes, pairs=[], init_source="prev", sigma_min=float("nan"),
-                              ms_extract=ms_ext, ms_match=0.0, ms_solve=0.0)
+                              ms_extract=ms_ext, ms_match=0.0, ms_solve=0.0, T_init=cam_start.T)
         if self.e1 is not None:
             self.e1.end_frame(first_id, True, None, plane_info, {})
 
@@ -466,9 +467,24 @@ class FrontEnd(mp.Process):
 
     def tracking(self, camera, gt_img, depth, grad_mask, tracking_mask=None, render_option='active', itr_num=None,
                  plane_ctx=None):
+        # PLAN E1c: gate (E1b, method gate) and direction-decoupled plane term (method dec); both off by default
+        pt_cfg = self.config.get("PlaneTracking", {}) or {}
+        if plane_ctx is not None and bool(pt_cfg.get("gate_plane_loss", False)):
+            m_act = plane_ctx["m"]
+            if m_act.shape[0] < 3 or float(torch.linalg.svdvals(m_act.double())[-1]) < self.plane_anchors.min_sv:
+                plane_ctx = None
+        dec = None
+        if self.pt_enable and bool(pt_cfg.get("decouple", False)):
+            t_ob = time.perf_counter()
+            m_np = plane_ctx["m"].double().cpu().numpy() if plane_ctx is not None else np.zeros((0, 3))
+            dec = DecoupledPoseStep(m_np, float(pt_cfg.get("obs_threshold", self.plane_anchors.min_sv)),
+                                    self.trans_lr, self.rot_lr, device=camera.T.device, dtype=camera.T.dtype)
+            obs_basis_ms = 1000 * (time.perf_counter() - t_ob)
+
         opt_params = []
-        opt_params.append({"params": [camera.cam_rot_delta], "lr": self.rot_lr})
-        opt_params.append({"params": [camera.cam_trans_delta], "lr": self.trans_lr})
+        if dec is None:
+            opt_params.append({"params": [camera.cam_rot_delta], "lr": self.rot_lr})
+            opt_params.append({"params": [camera.cam_trans_delta], "lr": self.trans_lr})
         opt_params.append({"params": [camera.exposure_a], "lr": 0.01})
         opt_params.append({"params": [camera.exposure_b], "lr": 0.01})
         pose_optimizer = torch.optim.AdamW(opt_params, weight_decay=0.01)
@@ -520,7 +536,14 @@ class FrontEnd(mp.Process):
             loss = color_loss + self.tracking_lambda_depth * depth_loss
             render_loss = loss.detach()
             plane_loss = None
-            if plane_ctx is not None:  # PLAN E1 H2: plane term on the same pose as the render
+            g_p_t = g_p_r = None
+            if dec is not None and plane_ctx is not None:  # PLAN E1c §3.3: plane gradient kept apart
+                tau = torch.cat([camera.cam_trans_delta, camera.cam_rot_delta], 0)
+                T_cur = SE3_exp(tau) @ camera.T
+                plane_loss = self.plane_anchors.plane_loss_ctx(T_cur, plane_ctx)
+                g_p_t, g_p_r = torch.autograd.grad(self.pt_lambda * plane_loss,
+                                                   [camera.cam_trans_delta, camera.cam_rot_delta])
+            if dec is None and plane_ctx is not None:  # PLAN E1 H2: plane term on the same pose as the render
                 tau = torch.cat([camera.cam_trans_delta, camera.cam_rot_delta], 0)
                 T_cur = SE3_exp(tau) @ camera.T
                 plane_loss = self.plane_anchors.plane_loss_ctx(T_cur, plane_ctx)
@@ -530,6 +553,13 @@ class FrontEnd(mp.Process):
 
             pose_optimizer.step()
             pose_optimizer.zero_grad()
+            if dec is not None:  # pose deltas are not in AdamW: merge render/plane gradients per direction
+                d_t, d_r = dec.step(camera.cam_trans_delta.grad, camera.cam_rot_delta.grad, g_p_t, g_p_r)
+                with torch.no_grad():
+                    camera.cam_trans_delta.copy_(d_t)
+                    camera.cam_rot_delta.copy_(d_r)
+                camera.cam_trans_delta.grad = None
+                camera.cam_rot_delta.grad = None
             with torch.no_grad():
                 converged = camera.update_pose()
                 iters_done = i + 1
@@ -542,6 +572,7 @@ class FrontEnd(mp.Process):
                 loss_render_final=float(render_loss),
                 loss_plane_final=None if plane_loss is None else float(plane_loss.detach()),
             )
+            self._dec_row = None if dec is None else dict(dec.log_row(), obs_basis_ms=obs_basis_ms)
 
         if self.verbose:
             early = f" early" if 0 < iters_done < n_iter else ""
@@ -1311,7 +1342,8 @@ class FrontEnd(mp.Process):
                         plane_info = dict(planes=planes, pairs=pairs, init_source=init_source,
                                           sigma_min=self.plane_anchors.last_sigma_min,
                                           ms_extract=1000 * (t_m - t_p), ms_match=1000 * (t_s - t_m),
-                                          ms_solve=1000 * (t_e - t_s))
+                                          ms_solve=1000 * (t_e - t_s), T_init=init_pose,
+                                          active_ids=[aid for _, aid in self.plane_anchors.active_pairs(pairs)])
 
                     cur_cam = Camera(cur_frame_idx, init_pose, gt_pose, self.dataset.K, self.dataset.height, self.dataset.width)
                     grad_mask, rgb_pixel_mask = self.compute_grad_mask(original_img)

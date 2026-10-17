@@ -34,3 +34,7 @@ PlaneTracking:
   solve_max_trans_m: 0.20
   solve_max_rot_deg: 15
   activate_after_kf: 2
+  # PLAN E1c §3.4 (E1 = all off); --method gate / dec switch them on
+  decouple: false
+  obs_threshold: 0.3        # = min_singular_value; per direction, not per frame
+  gate_plane_loss: false

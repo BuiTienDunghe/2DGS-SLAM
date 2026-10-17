@@ -387,15 +387,19 @@ def main(
     _apply_dataset_base_override(cfg, db)
 
     if method is not None:
-        methods = {"base": (False, False, False), "ours": (True, True, True),
-                   "ours_init": (True, True, False), "ours_loss": (True, False, True)}
+        # (enable, use_init, use_loss, gate_plane_loss, decouple); gate = E1b, dec = E1c
+        methods = {"base": (False, False, False, False, False), "ours": (True, True, True, False, False),
+                   "ours_init": (True, True, False, False, False), "ours_loss": (True, False, True, False, False),
+                   "gate": (True, True, True, True, False), "dec": (True, True, True, False, True)}
         if method not in methods:
             raise typer.BadParameter(f"--method must be one of {sorted(methods)}")
-        en, ui, ul = methods[method]
+        en, ui, ul, gt_, dc = methods[method]
         pt = cfg.setdefault("PlaneTracking", {})
         pt["enable"], pt["use_init"], pt["use_loss"] = en, ui, ul
+        pt["gate_plane_loss"], pt["decouple"] = gt_, dc
         cfg.setdefault("Results", {})["e1_log"] = True
-        Log(f"E1 method={method} PlaneTracking enable={en} use_init={ui} use_loss={ul}", tag="E1")
+        Log(f"E1 method={method} PlaneTracking enable={en} use_init={ui} use_loss={ul} "
+            f"gate_plane_loss={gt_} decouple={dc}", tag="E1")
     if save_dir is not None:
         cfg.setdefault("Results", {})["exact_save_dir"] = str(save_dir)
 

@@ -116,6 +116,8 @@ ET = np.array([e_split(k, track) for k in range(len(ids))])
 def block(a_, b_):
     s = (ids >= a_) & (ids <= b_)
     o = dict(frames=[int(a_), int(min(b_, ids.max()))], n_tracked=int(s.sum()))
+    if s.sum() < 2:          # segment outside a short (smoke) run
+        return o
     for (dk, sl), pp in P.items():
         sel = [x for x in pp if a_ <= x[0] <= b_ and a_ <= x[1] <= b_]
         tag = dk + ("_slide" if sl else "")

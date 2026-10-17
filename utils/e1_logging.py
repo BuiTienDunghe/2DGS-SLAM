@@ -18,9 +18,21 @@ from utils.eval_utils import evaluate_evo_e1
 from utils.logging_utils import Log
 
 FRAME_FIELDS = ["frame_id", "is_kf", "iters_done", "loss_render_final", "loss_plane_final", "n_planes",
-                "n_matched", "n_matched_active", "sigma_min", "init_source", "n_anchors", "n_anchors_active"]
-TIMING_FIELDS = ["frame_id", "ms_track", "ms_plane_extract", "ms_match", "ms_solve"]
+                "n_matched", "n_matched_active", "sigma_min", "init_source", "n_anchors", "n_anchors_active",
+                "T_init", "pairs", "active_ids"]                     # last three: PLAN E1c §5
+TIMING_FIELDS = ["frame_id", "ms_track", "ms_plane_extract", "ms_match", "ms_solve", "obs_basis_ms", "edge_ms"]
 RENDER_FRACTIONS = (0.2, 0.4, 0.6, 0.8)
+EXTRA_RENDER_FRAMES = (260, 600)                                      # PLAN E1c §5: one frame in S3, one in S5
+DEC_FIELDS = (["frame_id"] + [f"sig_t{i}" for i in range(3)] + [f"sig_r{i}" for i in range(3)] + ["n_obs_t", "n_obs_r"]
+              + [f"Vt{i}" for i in range(9)] + [f"Vr{i}" for i in range(9)] + ["gp_removed_norm"]
+              + [f"sum_abs_dxi_t{i}" for i in range(3)] + [f"sum_abs_dxi_r{i}" for i in range(3)]
+              + [f"mean_abs_gr_xi_t{i}" for i in range(3)])
+
+
+def _anchor_table(am):
+    return [dict(id=a.id, n_w=[float(x) for x in a.n_w.numpy()], d_w=float(a.d_w), n_obs_kf=int(a.n_obs_kf),
+                 active=bool(a.active), created_kf=int(a.created_kf), n_samples=int(a.samples_w.shape[0]))
+            for a in sorted(am.anchors.values(), key=lambda a: a.id)]
 
 
 def _so3_project(P):
@@ -61,7 +73,12 @@ class E1Logger:
         b, s = fe.frame_begin, fe.frame_step
         end = n if fe.frame_end_exclusive is None else min(n, fe.frame_end_exclusive)
         tg = [b + s * int(round((p * n - b) / s)) for p in RENDER_FRACTIONS]
+        tg += [f for f in EXTRA_RENDER_FRAMES if (f - b) % s == 0]
         self.render_frames = sorted({f for f in tg if b < f < end})
+        self._f_planes = self._f_anchors = self._f_dec = self._w_dec = None
+        if fe.pt_enable:
+            self._f_planes = open(os.path.join(self.dir, "planes.jsonl"), "w")
+            self._f_anchors = open(os.path.join(self.dir, "anchors_kf.jsonl"), "w")
         self.rows = []
         self.n_rejected = 0
         if torch.cuda.is_available():
@@ -85,6 +102,33 @@ class E1Logger:
                         ms_solve=plane_info["ms_solve"])
             if plane_info["init_source"] == "rejected":
                 self.n_rejected += 1
+            T = plane_info.get("T_init")
+            if T is not None:
+                row["T_init"] = ";".join(f"{x:.7g}" for x in T.detach().cpu().double().numpy()[:3, :].reshape(-1))
+            row["pairs"] = ";".join(f"{pi}:{aid}" for pi, aid in pairs)
+            row["active_ids"] = ";".join(str(a) for a in plane_info.get("active_ids", []))
+            self._f_planes.write(json.dumps(dict(frame_id=int(fid), planes=[
+                dict(n=[float(x) for x in p.n.numpy()], d=float(p.d), n_px=int(p.n_px), mse=float(p.mse))
+                for p in plane_info["planes"]])) + "\n")
+            self._f_planes.flush()
+            if is_kf:  # anchor table after this keyframe's update
+                self._f_anchors.write(json.dumps(dict(frame_id=int(fid), anchors=_anchor_table(am))) + "\n")
+                self._f_anchors.flush()
+        dec_row = getattr(self.fe, "_dec_row", None) if track_stats is not None else None
+        if dec_row is not None:
+            if self._w_dec is None:
+                self._f_dec = open(os.path.join(self.dir, "dec_log.csv"), "w", newline="")
+                self._w_dec = csv.DictWriter(self._f_dec, fieldnames=DEC_FIELDS)
+                self._w_dec.writeheader()
+            d = {"frame_id": int(fid), "n_obs_t": dec_row["n_obs_t"], "n_obs_r": dec_row["n_obs_r"],
+                 "gp_removed_norm": dec_row["gp_removed_norm"]}
+            for key, n_ in (("sig_t", 3), ("sig_r", 3), ("Vt", 9), ("Vr", 9), ("sum_abs_dxi_t", 3),
+                            ("sum_abs_dxi_r", 3), ("mean_abs_gr_xi_t", 3)):
+                for i in range(n_):
+                    d[f"{key}{i}"] = float(dec_row[key][i])
+            self._w_dec.writerow({k: _fmt(v) if isinstance(v, float) else v for k, v in d.items()})
+            self._f_dec.flush()
+            trow["obs_basis_ms"] = dec_row["obs_basis_ms"]
         self.rows.append(row)
         self._w_frame.writerow({k: _fmt(row.get(k)) for k in FRAME_FIELDS})
         self._w_time.writerow({k: _fmt(trow.get(k)) for k in TIMING_FIELDS})
@@ -132,6 +176,9 @@ class E1Logger:
         fe = self.fe
         self._f_frame.close()
         self._f_time.close()
+        for f in (self._f_planes, self._f_anchors, self._f_dec):
+            if f is not None:
+                f.close()
         ids = sorted(fe.cameras.keys())
         est = [_so3_project(np.linalg.inv(fe.cameras[i].T.detach().cpu().double().numpy())) for i in ids]
         gt = [_so3_project(np.linalg.inv(fe.cameras[i].gt_pose.detach().cpu().double().numpy())) for i in ids]
