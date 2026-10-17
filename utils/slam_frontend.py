@@ -23,6 +23,9 @@ sys.path.append("gaussian_splatting")
 from gaussian_renderer import render, render_for_tracking
 from gaussian_splatting.utils.graphics_utils import getWorld2View2
 from utils.camera_utils import Camera
+from gaussian_splatting.utils.camera_utils import SE3_exp
+from utils.plane_anchor import PlaneAnchorMap, PlaneExtractor
+from utils.e1_logging import E1Logger
 
 from utils.eval_utils import (
     eval_ate,
@@ -99,6 +102,8 @@ class FrontEnd(mp.Process):
         self.save_dir = os.path.join(
             rs["save_dir"], dset["type"], dset["sequence_name"], run_folder
         )
+        if rs.get("exact_save_dir"):          # PLAN E1 --save-dir: the run folder itself
+            self.save_dir = rs["exact_save_dir"]
         os.makedirs(self.save_dir, exist_ok=True)
 
         self.use_gui = rs["use_gui"]
@@ -174,6 +179,21 @@ class FrontEnd(mp.Process):
 
         self.verbose = bool(rs.get("verbose", False))
         self.log_mesh_cleaning = bool(rs.get("log_mesh_cleaning", False))
+
+        # PLAN E1: plane-anchor tracking (off by default; nothing below runs when disabled)
+        pt = self.config.get("PlaneTracking", {}) or {}
+        self.pt_enable = bool(pt.get("enable", False))
+        self.pt_use_init = bool(pt.get("use_init", True))
+        self.pt_use_loss = bool(pt.get("use_loss", True))
+        self.pt_lambda = float(pt.get("lambda_plane", 1.0))
+        self.plane_extractor = None
+        self.plane_anchors = None
+        if self.pt_enable:
+            self.plane_extractor = PlaneExtractor(pt)
+            self.plane_anchors = PlaneAnchorMap(pt, self.dataset.K, self.dataset.height, self.dataset.width)
+        # PLAN E1 §7 logging (write-only, both methods); off for upstream runs
+        self.e1 = E1Logger(self) if rs.get("e1_log", False) else None
+        self._track_stats = {}
 
     
     def request_init(self, camera, frame):
@@ -425,6 +445,17 @@ class FrontEnd(mp.Process):
         self.key_frames[first_id] = start_frame
         self.key_frame_ids.append(first_id)
 
+        plane_info = None
+        if self.pt_enable:  # PLAN E1 H0: anchors from the first frame, active at once
+            t_p = time.perf_counter()
+            planes = self.plane_extractor(first_depth, self.dataset.K)
+            ms_ext = 1000 * (time.perf_counter() - t_p)
+            self.plane_anchors.update_at_keyframe(first_id, planes, [], cam_start.T)
+            plane_info = dict(planes=planes, pairs=[], init_source="prev", sigma_min=float("nan"),
+                              ms_extract=ms_ext, ms_match=0.0, ms_solve=0.0)
+        if self.e1 is not None:
+            self.e1.end_frame(first_id, True, None, plane_info, {})
+
         self.request_init(cam_start, start_frame)
         self.requested_init = True
 
@@ -433,7 +464,8 @@ class FrontEnd(mp.Process):
             Log(f"init first_kf={first_id}", tag="Track")
     
 
-    def tracking(self, camera, gt_img, depth, grad_mask, tracking_mask=None, render_option='active', itr_num=None):
+    def tracking(self, camera, gt_img, depth, grad_mask, tracking_mask=None, render_option='active', itr_num=None,
+                 plane_ctx=None):
         opt_params = []
         opt_params.append({"params": [camera.cam_rot_delta], "lr": self.rot_lr})
         opt_params.append({"params": [camera.cam_trans_delta], "lr": self.trans_lr})
@@ -486,9 +518,16 @@ class FrontEnd(mp.Process):
             depth_loss = depth_error.mean()
 
             loss = color_loss + self.tracking_lambda_depth * depth_loss
+            render_loss = loss.detach()
+            plane_loss = None
+            if plane_ctx is not None:  # PLAN E1 H2: plane term on the same pose as the render
+                tau = torch.cat([camera.cam_trans_delta, camera.cam_rot_delta], 0)
+                T_cur = SE3_exp(tau) @ camera.T
+                plane_loss = self.plane_anchors.plane_loss_ctx(T_cur, plane_ctx)
+                loss = loss + self.pt_lambda * plane_loss
 
             loss.backward()
-            
+
             pose_optimizer.step()
             pose_optimizer.zero_grad()
             with torch.no_grad():
@@ -496,7 +535,14 @@ class FrontEnd(mp.Process):
                 iters_done = i + 1
                 if converged:
                     break
-        
+
+        if self.e1 is not None:
+            self._track_stats = dict(
+                iters_done=iters_done,
+                loss_render_final=float(render_loss),
+                loss_plane_final=None if plane_loss is None else float(plane_loss.detach()),
+            )
+
         if self.verbose:
             early = f" early" if 0 < iters_done < n_iter else ""
             Log(f"track frame={camera.uid} iters={iters_done}/{n_iter}{early}", tag="Track")
@@ -1206,6 +1252,13 @@ class FrontEnd(mp.Process):
                             continue
                         else:
                             self._save_run_metrics_csv(ate_kf, ate_all, rend_out)
+                            if self.e1 is not None:
+                                try:
+                                    self.e1.finalize(ate_kf, ate_all, rend_out, dt)
+                                except Exception as e:  # never hang the pipeline on a logging error
+                                    import traceback
+                                    traceback.print_exc()
+                                    Log(f"E1 finalize failed: {e}", tag="E1")
                             break
     
                     if self.requested_init:
@@ -1237,7 +1290,29 @@ class FrontEnd(mp.Process):
                             init_pose = self.cameras[last_idx].T
                     else:
                         init_pose = self.cameras[last_idx].T
-    
+
+                    plane_info, plane_ctx = None, None
+                    if self.pt_enable:  # PLAN E1 H1: planes, matching, closed-form init
+                        t_p = time.perf_counter()
+                        planes = self.plane_extractor(depth, self.dataset.K)
+                        t_m = time.perf_counter()
+                        pairs = self.plane_anchors.match(planes, init_pose)
+                        t_s = time.perf_counter()
+                        T_plane = self.plane_anchors.solve_pose(planes, pairs, init_pose)
+                        t_e = time.perf_counter()
+                        init_source = "prev"
+                        if self.plane_anchors.last_solve_status == "rejected":
+                            init_source = "rejected"
+                        if self.pt_use_init and T_plane is not None:
+                            init_pose = T_plane
+                            init_source = "plane"
+                        if self.pt_use_loss:
+                            plane_ctx = self.plane_anchors.make_loss_ctx(planes, pairs, init_pose.device, init_pose.dtype)
+                        plane_info = dict(planes=planes, pairs=pairs, init_source=init_source,
+                                          sigma_min=self.plane_anchors.last_sigma_min,
+                                          ms_extract=1000 * (t_m - t_p), ms_match=1000 * (t_s - t_m),
+                                          ms_solve=1000 * (t_e - t_s))
+
                     cur_cam = Camera(cur_frame_idx, init_pose, gt_pose, self.dataset.K, self.dataset.height, self.dataset.width)
                     grad_mask, rgb_pixel_mask = self.compute_grad_mask(original_img)
                     depth_mask = torch.logical_and(depth > self.min_depth, depth < self.max_depth)
@@ -1250,8 +1325,17 @@ class FrontEnd(mp.Process):
                         depth_mapping_mask=depth_mapping_mask,
                     )
     
-                    render_pkg, _ = self.tracking(cur_cam, original_img, depth, grad_mask=grad_mask)
-    
+                    if self.e1 is not None:
+                        torch.cuda.synchronize()
+                        t_tr = time.perf_counter()
+                    render_pkg, _ = self.tracking(cur_cam, original_img, depth, grad_mask=grad_mask,
+                                                  plane_ctx=plane_ctx)
+                    timing = {}
+                    if self.e1 is not None:
+                        torch.cuda.synchronize()
+                        timing["ms_track"] = 1000 * (time.perf_counter() - t_tr)
+                        self.e1.maybe_render(cur_cam, cur_frame_idx, original_img, depth, render_pkg)
+
                     self.cameras[cur_frame_idx] = cur_cam
     
                     if self.enable_loop_closure:
@@ -1301,8 +1385,13 @@ class FrontEnd(mp.Process):
                     t_check_max = t_dis > self.kf_max_translation
                     overlap_max = ratio < self.kf_min_overlap
     
+                    is_kf = bool((t_check and overlap_check) or t_check_max or overlap_max)
                     if (t_check and overlap_check) or t_check_max or overlap_max :
-    
+
+                        if self.pt_enable:  # PLAN E1 H3: re-match with the optimised pose, then update anchors
+                            pairs_kf = self.plane_anchors.match(plane_info["planes"], cur_cam.T)
+                            self.plane_anchors.update_at_keyframe(cur_frame_idx, plane_info["planes"], pairs_kf, cur_cam.T)
+
                         self.add_keyframe(cur_frame_idx, cur_frame, resized_img, src="odom")
     
                         if (len(self.key_frame_ids) - self.last_loop_at_len_kf) >= self.old_than_N_keyframe:
@@ -1318,6 +1407,9 @@ class FrontEnd(mp.Process):
                     else:
                         if self.pgo_with_all_frames:
                             self.tracked_since_last_kf.append(cur_cam)
+
+                    if self.e1 is not None:
+                        self.e1.end_frame(cur_frame_idx, is_kf, self._track_stats, plane_info, timing)
 
                     cur_frame_idx += step
                     pbar.update(1)

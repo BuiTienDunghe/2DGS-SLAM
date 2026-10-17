@@ -1,0 +1,36 @@
+inherit_from: "configs/tum/base_config.yaml"
+
+# PLAN E1 §1: shared overrides for base and ours (tracking isolated, no MASt3R loop/reloc, no refine)
+Results:
+  save_dir: "results_exp/e1"
+  name_tag: "e1"
+  use_gui: False
+  map_refine: False
+
+Training:
+  enable_loop_closure: False
+  enable_revisit_loop: False
+  enable_mast3r_reloc: False
+  use_odom_init_guess: False   # never use GT odometry (leak guard, PLAN §11)
+
+# PLAN E1 §4.6: locked before any test run; --method sets enable/use_init/use_loss
+PlaneTracking:
+  enable: false
+  use_init: true
+  use_loss: true
+  lambda_plane: 1.0
+  sigma_normal: 0.02
+  sigma_dist: 0.01
+  cell_size: 20
+  c_noise: 3.0
+  merge_angle_deg: 10
+  merge_dist_k: 3.0
+  min_plane_pixels: 3200
+  max_plane_depth: 4.0
+  match_max_angle_deg: 10
+  match_max_dist_m: 0.10
+  match_min_overlap: 0.3
+  min_singular_value: 0.3
+  solve_max_trans_m: 0.20
+  solve_max_rot_deg: 15
+  activate_after_kf: 2

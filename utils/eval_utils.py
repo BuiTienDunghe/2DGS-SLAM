@@ -35,6 +35,38 @@ def evaluate_evo(poses_gt, poses_est, label, monocular=False, quiet=False):
     return ape_stat
 
 
+def evaluate_evo_e1(poses_gt, poses_est, rpe_deltas=(1, 15), monocular=False):
+    """PLAN E1 §8: same alignment and APE as evaluate_evo, plus the per-frame APE array and RPE.
+
+    RPE: evo RPE between pose pairs ``delta`` tracked frames apart (delta_unit = frames), RMSE of the
+    translation part (m) and of the rotation angle (deg); with frame_step 2 on 30 Hz TUM, 15 frames ~ 1 s.
+    """
+    Unit = metrics.Unit
+
+    traj_ref = PosePath3D(poses_se3=poses_gt)
+    traj_est = PosePath3D(poses_se3=poses_est)
+    traj_est_aligned = trajectory.align_trajectory(traj_est, traj_ref, correct_scale=monocular)
+    data = (traj_ref, traj_est_aligned)
+    ape_metric = metrics.APE(metrics.PoseRelation.translation_part)
+    ape_metric.process_data(data)
+    out = dict(
+        ate_rmse_m=float(ape_metric.get_statistic(metrics.StatisticsType.rmse)),
+        ape_per_frame_m=np.asarray(ape_metric.error, dtype=np.float64),
+    )
+    for d in rpe_deltas:
+        if len(poses_gt) <= d:
+            continue
+        for rel, key, unit in (
+            (metrics.PoseRelation.translation_part, "rpe_trans", "m"),
+            (metrics.PoseRelation.rotation_angle_deg, "rpe_rot", "deg"),
+        ):
+            rpe = metrics.RPE(rel, delta=d, delta_unit=Unit.frames, all_pairs=False)
+            rpe.process_data(data)
+            out[f"{key}_rmse_{unit}_d{d}"] = float(rpe.get_statistic(metrics.StatisticsType.rmse))
+            out[f"{key}_mean_{unit}_d{d}"] = float(rpe.get_statistic(metrics.StatisticsType.mean))
+    return out
+
+
 def eval_ate_for_indices(
     frames, frame_ids, label_evo, monocular=False, quiet=False
 ):

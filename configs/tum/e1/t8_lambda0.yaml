@@ -1,0 +1,5 @@
+inherit_from: "configs/tum/e1/fr3_snt_far.yaml"
+
+# T8 (PLAN E1 §6): plane code on, lambda_plane = 0, use_init false (run with --method ours_loss)
+PlaneTracking:
+  lambda_plane: 0.0

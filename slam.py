@@ -347,6 +347,21 @@ def main(
             resolve_path=False,
         ),
     ] = None,
+    method: Annotated[
+        Optional[str],
+        typer.Option(
+            "--method",
+            help="PLAN E1: base | ours | ours_init | ours_loss (sets PlaneTracking.*, enables E1 logging).",
+        ),
+    ] = None,
+    seed: Annotated[
+        Optional[int],
+        typer.Option("--seed", help="Seed for random/numpy/torch (default 42 as upstream)."),
+    ] = None,
+    save_dir: Annotated[
+        Optional[Path],
+        typer.Option("--save-dir", help="Exact run output folder (overrides Results.save_dir/<type>/<seq>/<stamp>)."),
+    ] = None,
 ) -> None:
     rng = _parse_range_str(range_)
     mp.set_start_method("spawn")
@@ -371,7 +386,20 @@ def main(
     db = str(dataset_base) if dataset_base is not None else None
     _apply_dataset_base_override(cfg, db)
 
-    seed_everything(42)
+    if method is not None:
+        methods = {"base": (False, False, False), "ours": (True, True, True),
+                   "ours_init": (True, True, False), "ours_loss": (True, False, True)}
+        if method not in methods:
+            raise typer.BadParameter(f"--method must be one of {sorted(methods)}")
+        en, ui, ul = methods[method]
+        pt = cfg.setdefault("PlaneTracking", {})
+        pt["enable"], pt["use_init"], pt["use_loss"] = en, ui, ul
+        cfg.setdefault("Results", {})["e1_log"] = True
+        Log(f"E1 method={method} PlaneTracking enable={en} use_init={ui} use_loss={ul}", tag="E1")
+    if save_dir is not None:
+        cfg.setdefault("Results", {})["exact_save_dir"] = str(save_dir)
+
+    seed_everything(42 if seed is None else int(seed))
     SLAM(cfg).run()
     Log("Done.")
 
