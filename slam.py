@@ -362,6 +362,14 @@ def main(
         Optional[Path],
         typer.Option("--save-dir", help="Exact run output folder (overrides Results.save_dir/<type>/<seq>/<stamp>)."),
     ] = None,
+    pw: Annotated[
+        bool,
+        typer.Option("--pw", help="PLAN A2G-P1: plane world on (needs --method dec); off = E1c path unchanged."),
+    ] = False,
+    pw_debug: Annotated[
+        bool,
+        typer.Option("--pw-debug", help="PLAN A2G-P1: invariants I1–I12 become assertions."),
+    ] = False,
 ) -> None:
     rng = _parse_range_str(range_)
     mp.set_start_method("spawn")
@@ -402,6 +410,13 @@ def main(
             f"gate_plane_loss={gt_} decouple={dc}", tag="E1")
     if save_dir is not None:
         cfg.setdefault("Results", {})["exact_save_dir"] = str(save_dir)
+    if pw:
+        if method != "dec":
+            raise typer.BadParameter("--pw needs --method dec (PLAN A2G-P1 keeps the E1c decoupled tracking)")
+        pwc = cfg.setdefault("PlaneWorld", {})
+        pwc["enable"] = True
+        pwc["debug_checks"] = bool(pw_debug)
+        Log(f"A2G-P1 plane world on (debug_checks={bool(pw_debug)})", tag="E1")
 
     seed_everything(42 if seed is None else int(seed))
     SLAM(cfg).run()

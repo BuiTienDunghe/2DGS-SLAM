@@ -1,0 +1,26 @@
+inherit_from: "configs/tum/e1/e1_common.yaml"
+
+# PLAN A2G-P1 (rút gọn): plane world. Off unless slam.py --pw (with --method dec); off = E1c path unchanged.
+Results:
+  save_dir: "results_exp/a2g_p1q"
+
+PlaneWorld:
+  enable: false
+  alpha: 0.99
+  sensor:                   # §3.2(a): sigma_z = a + b z^2 (E1c); floors sigma_theta0, sigma_d0 (§7 quick calib)
+    a: 0.0
+    b: 1.425e-3
+    sigma_theta0_deg: 0.372    # 0.5 x sqrt(1.66/3), locked after smoke snt_far (§7)
+    sigma_d0_m: 0.00372      # 0.005 x sqrt(1.66/3)
+  drift:                    # §3.2(b) linear; set by tools/a2g_p1/quick_calib.py (E1c snt_far: mixes test data)
+    kappa_t: 0.0334292
+    kappa_r: 0.0124478
+  pred_window: 30           # §3.2(c)
+  pred_init: {sigma_rho_m: 0.01, sigma_theta_deg: 0.5}
+  grid_h: 0.05              # support grid cell (m)
+  L_kf: 10                  # keyframes before deleting a candidate / a quiet conflict
+  m_diff: 2                 # E = {diff >= 2}
+  inview_min_cells: 3
+  obs_threshold: 0.3        # rank 6 = obs_basis 3+3 (E1c)
+  gn_iters: 3
+  debug_checks: false       # slam.py --pw-debug

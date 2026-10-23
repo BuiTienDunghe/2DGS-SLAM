@@ -192,6 +192,13 @@ class FrontEnd(mp.Process):
         if self.pt_enable:
             self.plane_extractor = PlaneExtractor(pt)
             self.plane_anchors = PlaneAnchorMap(pt, self.dataset.K, self.dataset.height, self.dataset.width)
+        # PLAN A2G-P1: plane world (off unless --pw; needs PlaneTracking on)
+        self.pw = None
+        pwc = self.config.get("PlaneWorld", {}) or {}
+        if self.pt_enable and bool(pwc.get("enable", False)):
+            from utils.pw.world import PlaneWorld
+            self.pw = PlaneWorld(pwc, self.dataset.K, self.dataset.height, self.dataset.width, self.plane_anchors,
+                                 out_dir=self.save_dir)
         # PLAN E1 §7 logging (write-only, both methods); off for upstream runs
         self.e1 = E1Logger(self) if rs.get("e1_log", False) else None
         self._track_stats = {}
@@ -451,9 +458,13 @@ class FrontEnd(mp.Process):
             t_p = time.perf_counter()
             planes = self.plane_extractor(first_depth, self.dataset.K)
             ms_ext = 1000 * (time.perf_counter() - t_p)
-            self.plane_anchors.update_at_keyframe(first_id, planes, [], cam_start.T)
-            plane_info = dict(planes=planes, pairs=[], init_source="prev", sigma_min=float("nan"),
-                              ms_extract=ms_ext, ms_match=0.0, ms_solve=0.0, T_init=cam_start.T)
+            if self.pw is not None:  # PLAN A2G-P1 H0
+                plane_info = self.pw.on_first_frame(first_id, planes, cam_start.T)
+                plane_info["ms_extract"] = ms_ext
+            else:
+                self.plane_anchors.update_at_keyframe(first_id, planes, [], cam_start.T)
+                plane_info = dict(planes=planes, pairs=[], init_source="prev", sigma_min=float("nan"),
+                                  ms_extract=ms_ext, ms_match=0.0, ms_solve=0.0, T_init=cam_start.T)
         if self.e1 is not None:
             self.e1.end_frame(first_id, True, None, plane_info, {})
 
@@ -1327,23 +1338,30 @@ class FrontEnd(mp.Process):
                         t_p = time.perf_counter()
                         planes = self.plane_extractor(depth, self.dataset.K)
                         t_m = time.perf_counter()
-                        pairs = self.plane_anchors.match(planes, init_pose)
-                        t_s = time.perf_counter()
-                        T_plane = self.plane_anchors.solve_pose(planes, pairs, init_pose)
-                        t_e = time.perf_counter()
-                        init_source = "prev"
-                        if self.plane_anchors.last_solve_status == "rejected":
-                            init_source = "rejected"
-                        if self.pt_use_init and T_plane is not None:
-                            init_pose = T_plane
-                            init_source = "plane"
-                        if self.pt_use_loss:
-                            plane_ctx = self.plane_anchors.make_loss_ctx(planes, pairs, init_pose.device, init_pose.dtype)
-                        plane_info = dict(planes=planes, pairs=pairs, init_source=init_source,
-                                          sigma_min=self.plane_anchors.last_sigma_min,
-                                          ms_extract=1000 * (t_m - t_p), ms_match=1000 * (t_s - t_m),
-                                          ms_solve=1000 * (t_e - t_s), T_init=init_pose,
-                                          active_ids=[aid for _, aid in self.plane_anchors.active_pairs(pairs)])
+                        if self.pw is not None:  # PLAN A2G-P1 H1: IC, JC, init
+                            out = self.pw.on_frame(cur_frame_idx, planes, init_pose)
+                            init_pose = out.init_pose
+                            plane_ctx = out.ctx if self.pt_use_loss else None
+                            plane_info = out.plane_info
+                            plane_info["ms_extract"] = 1000 * (t_m - t_p)
+                        else:
+                            pairs = self.plane_anchors.match(planes, init_pose)
+                            t_s = time.perf_counter()
+                            T_plane = self.plane_anchors.solve_pose(planes, pairs, init_pose)
+                            t_e = time.perf_counter()
+                            init_source = "prev"
+                            if self.plane_anchors.last_solve_status == "rejected":
+                                init_source = "rejected"
+                            if self.pt_use_init and T_plane is not None:
+                                init_pose = T_plane
+                                init_source = "plane"
+                            if self.pt_use_loss:
+                                plane_ctx = self.plane_anchors.make_loss_ctx(planes, pairs, init_pose.device, init_pose.dtype)
+                            plane_info = dict(planes=planes, pairs=pairs, init_source=init_source,
+                                              sigma_min=self.plane_anchors.last_sigma_min,
+                                              ms_extract=1000 * (t_m - t_p), ms_match=1000 * (t_s - t_m),
+                                              ms_solve=1000 * (t_e - t_s), T_init=init_pose,
+                                              active_ids=[aid for _, aid in self.plane_anchors.active_pairs(pairs)])
 
                     cur_cam = Camera(cur_frame_idx, init_pose, gt_pose, self.dataset.K, self.dataset.height, self.dataset.width)
                     grad_mask, rgb_pixel_mask = self.compute_grad_mask(original_img)
@@ -1369,6 +1387,8 @@ class FrontEnd(mp.Process):
                         self.e1.maybe_render(cur_cam, cur_frame_idx, original_img, depth, render_pkg)
 
                     self.cameras[cur_frame_idx] = cur_cam
+                    if self.pw is not None:  # PLAN A2G-P1: Q_pred, s, phi, ledger
+                        self.pw.after_tracking(cur_frame_idx, cur_cam.T)
     
                     if self.enable_loop_closure:
                         resized_img = self.dust3r.preprocess(pil_img)
@@ -1420,7 +1440,9 @@ class FrontEnd(mp.Process):
                     is_kf = bool((t_check and overlap_check) or t_check_max or overlap_max)
                     if (t_check and overlap_check) or t_check_max or overlap_max :
 
-                        if self.pt_enable:  # PLAN E1 H3: re-match with the optimised pose, then update anchors
+                        if self.pw is not None:  # PLAN A2G-P1 H3: re-match (K3), EKF, life cycle, merging
+                            self.pw.on_keyframe(cur_frame_idx, cur_cam.T, depth)
+                        elif self.pt_enable:  # PLAN E1 H3: re-match with the optimised pose, then update anchors
                             pairs_kf = self.plane_anchors.match(plane_info["planes"], cur_cam.T)
                             self.plane_anchors.update_at_keyframe(cur_frame_idx, plane_info["planes"], pairs_kf, cur_cam.T)
 

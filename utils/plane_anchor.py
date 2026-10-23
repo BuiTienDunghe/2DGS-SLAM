@@ -74,6 +74,8 @@ class PlaneMeas:              # one plane measured in the camera
     n_px: int                 # number of valid pixels
     mse: float                # fit error (m^2), smallest PCA eigenvalue
     pts_c: np.ndarray = field(default=None, repr=False)   # (<=500, 3) camera-frame samples
+    cells: dict = field(default=None, repr=False)        # PLAN A2G-P1 §3.1: dict(ij, cnt, s1, s2) per CAPE cell
+    cells: dict = field(default=None, repr=False)        # PLAN A2G-P1 §3.1: dict(ij, cnt, s1, s2) per CAPE cell
 
 
 @dataclass
@@ -252,6 +254,12 @@ class PlaneExtractor:
                     pts_c=_even_subsample(pts, MAX_SAMPLES),
                 )
             )
+            ij = np.argwhere(mask)                            # row-major, same cells as the mask
+            planes[-1].cells = dict(ij=ij, cnt=cnt[ij[:, 0], ij[:, 1]].copy(), s1=s1[ij[:, 0], ij[:, 1]].copy(),
+                                    s2=s2[ij[:, 0], ij[:, 1]].copy())
+            ij = np.argwhere(mask)                            # row-major, same cells as the mask
+            planes[-1].cells = dict(ij=ij, cnt=cnt[ij[:, 0], ij[:, 1]].copy(), s1=s1[ij[:, 0], ij[:, 1]].copy(),
+                                    s2=s2[ij[:, 0], ij[:, 1]].copy())
         return planes
 
 

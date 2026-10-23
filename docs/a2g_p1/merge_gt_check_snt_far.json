@@ -1,0 +1,92 @@
+[
+ {
+  "k": 332,
+  "keep": 3,
+  "drop": 5,
+  "created": [
+   38,
+   332
+  ],
+  "est_angle_deg": 3.647902307037162,
+  "est_dist_cm": -0.6256283106145519,
+  "gt_angle_deg": 2.342726775098653,
+  "gt_dist_cm": 3.4181858422143883,
+  "suspect": true,
+  "gt_false": true
+ },
+ {
+  "k": 364,
+  "keep": 3,
+  "drop": 6,
+  "created": [
+   38,
+   364
+  ],
+  "est_angle_deg": 3.52744138551347,
+  "est_dist_cm": 0.029793588665933665,
+  "gt_angle_deg": 1.896707782665351,
+  "gt_dist_cm": 3.8848441315110254,
+  "suspect": true,
+  "gt_false": true
+ },
+ {
+  "k": 398,
+  "keep": 3,
+  "drop": 8,
+  "created": [
+   38,
+   398
+  ],
+  "est_angle_deg": 3.7414800470161658,
+  "est_dist_cm": 0.8968177070635065,
+  "gt_angle_deg": 1.8807511029405577,
+  "gt_dist_cm": 4.334512593070993,
+  "suspect": true,
+  "gt_false": true
+ },
+ {
+  "k": 438,
+  "keep": 1,
+  "drop": 9,
+  "created": [
+   0,
+   438
+  ],
+  "est_angle_deg": 2.1169185162689406,
+  "est_dist_cm": -0.46230975899908544,
+  "gt_angle_deg": 1.4216033163712072,
+  "gt_dist_cm": 0.795775864499175,
+  "suspect": false,
+  "gt_false": false
+ },
+ {
+  "k": 522,
+  "keep": 1,
+  "drop": 10,
+  "created": [
+   0,
+   522
+  ],
+  "est_angle_deg": 1.2382779889634798,
+  "est_dist_cm": 2.128928929840531,
+  "gt_angle_deg": 1.1915127584536505,
+  "gt_dist_cm": 0.8781411305714624,
+  "suspect": false,
+  "gt_false": false
+ },
+ {
+  "k": 598,
+  "keep": 1,
+  "drop": 11,
+  "created": [
+   0,
+   598
+  ],
+  "est_angle_deg": 2.246347848958456,
+  "est_dist_cm": 1.1567231927440205,
+  "gt_angle_deg": 1.3292548077485846,
+  "gt_dist_cm": 1.5815248998475835,
+  "suspect": false,
+  "gt_false": false
+ }
+]

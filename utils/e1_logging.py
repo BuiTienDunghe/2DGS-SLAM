@@ -20,7 +20,8 @@ from utils.logging_utils import Log
 FRAME_FIELDS = ["frame_id", "is_kf", "iters_done", "loss_render_final", "loss_plane_final", "n_planes",
                 "n_matched", "n_matched_active", "sigma_min", "init_source", "n_anchors", "n_anchors_active",
                 "T_init", "pairs", "active_ids"]                     # last three: PLAN E1c §5
-TIMING_FIELDS = ["frame_id", "ms_track", "ms_plane_extract", "ms_match", "ms_solve", "obs_basis_ms", "edge_ms"]
+TIMING_FIELDS = ["frame_id", "ms_track", "ms_plane_extract", "ms_match", "ms_solve", "obs_basis_ms", "edge_ms",
+                 "ms_pw"]                                              # last: PLAN A2G-P1 plane world
 RENDER_FRACTIONS = (0.2, 0.4, 0.6, 0.8)
 EXTRA_RENDER_FRAMES = (260, 600)                                      # PLAN E1c §5: one frame in S3, one in S5
 DEC_FIELDS = (["frame_id"] + [f"sig_t{i}" for i in range(3)] + [f"sig_r{i}" for i in range(3)] + ["n_obs_t", "n_obs_r"]
@@ -93,13 +94,20 @@ class E1Logger:
         trow = dict(frame_id=int(fid), ms_track=timing.get("ms_track"))
         if plane_info is not None:
             am = self.fe.plane_anchors
+            pw = getattr(self.fe, "pw", None)
             pairs = plane_info["pairs"]
-            row.update(n_planes=len(plane_info["planes"]), n_matched=len(pairs),
-                       n_matched_active=len(am.active_pairs(pairs)), sigma_min=plane_info["sigma_min"],
-                       init_source=plane_info["init_source"], n_anchors=len(am.anchors),
-                       n_anchors_active=am.n_active())
+            if pw is not None:  # PLAN A2G-P1: counts from the plane world (anchors reduced to primaries)
+                row.update(n_planes=len(plane_info["planes"]), n_matched=len(pairs),
+                           n_matched_active=len(plane_info.get("active_ids", [])), sigma_min=plane_info["sigma_min"],
+                           init_source=plane_info["init_source"], n_anchors=pw.n_primary(),
+                           n_anchors_active=pw.n_active())
+            else:
+                row.update(n_planes=len(plane_info["planes"]), n_matched=len(pairs),
+                           n_matched_active=len(am.active_pairs(pairs)), sigma_min=plane_info["sigma_min"],
+                           init_source=plane_info["init_source"], n_anchors=len(am.anchors),
+                           n_anchors_active=am.n_active())
             trow.update(ms_plane_extract=plane_info["ms_extract"], ms_match=plane_info["ms_match"],
-                        ms_solve=plane_info["ms_solve"])
+                        ms_solve=plane_info["ms_solve"], ms_pw=plane_info.get("ms_pw"))
             if plane_info["init_source"] == "rejected":
                 self.n_rejected += 1
             T = plane_info.get("T_init")
@@ -112,7 +120,8 @@ class E1Logger:
                 for p in plane_info["planes"]])) + "\n")
             self._f_planes.flush()
             if is_kf:  # anchor table after this keyframe's update
-                self._f_anchors.write(json.dumps(dict(frame_id=int(fid), anchors=_anchor_table(am))) + "\n")
+                tab = pw.anchors_table() if pw is not None else _anchor_table(am)
+                self._f_anchors.write(json.dumps(dict(frame_id=int(fid), anchors=tab)) + "\n")
                 self._f_anchors.flush()
         dec_row = getattr(self.fe, "_dec_row", None) if track_stats is not None else None
         if dec_row is not None:
@@ -224,6 +233,11 @@ class E1Logger:
                 n_anchors_final=len(am.anchors), n_anchors_active_final=am.n_active(),
                 n_strip_rejected=fe.plane_extractor.n_strip_rejected, n_back_facing=am.n_back_facing,
             )
+            pw = getattr(fe, "pw", None)
+            if pw is not None:  # PLAN A2G-P1 summary (counters, invariant violations, timing)
+                m.update(n_anchors_final=pw.n_primary(), n_anchors_active_final=pw.n_active(),
+                         ms_pw_mean=mean_of("ms_pw"), pw=pw.summary())
+                pw.close()
         # memory and map
         if torch.cuda.is_available():
             gib = torch.cuda.max_memory_allocated() / 1024 ** 3
