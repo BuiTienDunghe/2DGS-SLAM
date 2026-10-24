@@ -1,4 +1,4 @@
-"""PLAN A2G-P1 v2 §3.5: IC + Hungarian, ambiguity flag, conflict rule, joint compatibility and GN init.
+"""PLAN A2G-P1 core §3.4-3.5: IC + region levels + Hungarian, ambiguity flag, joint compatibility and GN init.
 
 Decisions (IC, ambiguity, JC) use the offset-corrected anchor y_j = x_j (+) b_hat with
 S = J_a R_s J_a^T + J_b V_j(k) J_b^T (+ J_xi Q J_xi^T at the gate pose). The pose constraint (GN init, Kabsch, and
@@ -10,7 +10,7 @@ from scipy.optimize import linear_sum_assignment
 from utils.obs_decouple import obs_basis
 
 from .geometry import facing, grid_index, overlap_or_adjacent, se3_exp, to_camera
-from .model import CHI2_2, CHI2_3, ang_nis, chi2, jac_a, jac_b, jac_xi, nis, residual
+from .uncertainty import CHI2_2, CHI2_3, ang_nis, chi2, jac_a, jac_b, jac_xi, nis, residual, residual_cov
 
 BIG_M = 1e4
 NO_PASS = 1e9
@@ -29,14 +29,11 @@ def pair_terms(seg, g, T):
 
 def pair_S(seg, g, V, T, Q=None):
     r, Ja, Jb, Jx = pair_terms(seg, g, T)
-    S = Ja @ seg.R @ Ja.T + Jb @ V @ Jb.T
-    if Q is not None:
-        S = S + Jx @ Q @ Jx.T
-    return r, 0.5 * (S + S.T), Ja, Jb, Jx
+    return r, residual_cov(Ja, seg.R, Jb, V, Jx, Q), Ja, Jb, Jx
 
 
 def ic_and_assign(segs, anchors, T, geom, Vk, Q=None, restrict_s=None, restrict_a=None, h=None):
-    """IC of every (segment, facing primary anchor), conflict rule, Hungarian (max #pairs, then NIS + ln det S).
+    """IC of every (segment, facing primary anchor), region levels, Hungarian (max #pairs, then NIS + ln det S).
     Returns (cand, assign, info) with info[(s, aid)] = (nis, S, r)."""
     S_idx = list(range(len(segs))) if restrict_s is None else list(restrict_s)
     A_list = [a for a in anchors if (restrict_a is None or a.id in restrict_a)]
@@ -51,37 +48,29 @@ def ic_and_assign(segs, anchors, T, geom, Vk, Q=None, restrict_s=None, restrict_
             passed[(si, a.id)] = ok
             cand.append(dict(s=si, j=a.id, state=a.state, nis=v, nll=v + float(np.linalg.slogdet(S)[1]), ic=bool(ok)))
     by_id = {a.id: a for a in A_list}
-    all_by_id = {a.id: a for a in anchors}
-
-    def jstar_passes(si, jid):
-        """conflict rule: does j* pass IC with segment si? (j* may be outside A_list, e.g. already assigned)"""
-        if (si, jid) in passed:
-            return passed[(si, jid)]
-        js = all_by_id.get(jid)
-        if js is None or not facing(*to_camera(T, *geom(js))[:2]):
-            return False
-        r, S, *_ = pair_S(segs[si], geom(js), Vk(js), T, Q)
-        return nis(r, S) <= CHI2_3
-
-    for c in cand:
-        a = by_id[c["j"]]
-        if a.state == "conflict" and a.conflict_with is not None and jstar_passes(c["s"], a.conflict_with):
-            c["ic"] = False
-            c["blocked"] = True
-    # P1-v2.1 region first: if some IC-passing anchor has a support region overlapping/touching the segment cells
-    # (projected with the pose in use), only those anchors stay candidates for that segment
+    # PLAN core §3.5 region levels: 2 = common cell, 1 = adjacent only, 0 = no contact (segment cells projected
+    # into the anchor's support grid with the pose in use). Only candidates at the highest level present are kept;
+    # a segment is unambiguous when exactly one candidate sits at that level.
     if h is not None:
         for si in S_idx:
             ok_c = [c for c in cand if c["s"] == si and c["ic"]]
-            touch = [c for c in ok_c if overlap_or_adjacent(seg_grid_idx(segs[si], T, by_id[c["j"]], h),
-                                                            by_id[c["j"]].cells)]
             for c in ok_c:
-                c["region"] = c in touch
-            if touch:
+                a = by_id[c["j"]]
+                idx = seg_grid_idx(segs[si], T, a, h)
+                if a.cells and any(tuple(x) in a.cells for x in idx.tolist()):
+                    c["region_level"] = 2
+                elif overlap_or_adjacent(idx, a.cells):
+                    c["region_level"] = 1
+                else:
+                    c["region_level"] = 0
+            if ok_c:
+                top = max(c["region_level"] for c in ok_c)
+                at_top = [c for c in ok_c if c["region_level"] == top]
                 for c in ok_c:
-                    if c not in touch:
+                    if c["region_level"] < top:
                         c["ic"] = False
                         c["region_dropped"] = True
+                    c["unambiguous"] = (len(at_top) == 1 and c in at_top)
     assign = []
     if S_idx and A_list:
         M = np.full((len(S_idx), len(A_list)), NO_PASS)

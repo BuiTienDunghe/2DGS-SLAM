@@ -1,13 +1,13 @@
 inherit_from: "configs/tum/e1/e1_common.yaml"
 
-# PLAN A2G-P1 (rút gọn): plane world. Off unless slam.py --pw (with --method dec); off = E1c path unchanged.
+# PLAN A2G-P1 core: plane world. Off unless slam.py --pw (with --method dec); off = E1c path unchanged.
 Results:
-  save_dir: "results_exp/a2g_p1v2"
+  save_dir: "results_exp/a2g_p1core"
 
 PlaneWorld:
   enable: false
   alpha: 0.99
-  sensor:                   # §3.2(a) R_s: sigma_z = a + b z^2 (E1c); floors at their defaults, NOT tuned (PLAN v2 §0)
+  sensor:                   # PLAN core §3.1: per-cell R_s; floors calibrated once on fr3 snt_near (§6), then locked
     a: 0.0
     b: 1.425e-3
     sigma_theta0_deg: 0.5
@@ -15,8 +15,6 @@ PlaneWorld:
   pred_window: 30           # Q_pred (full 6x6) of the constant-velocity gate
   pred_init: {sigma_rho_m: 0.01, sigma_theta_deg: 0.5}
   offset_window: 30         # W_b: samples of the measured offset b_hat (tracked frames)
-  gamma0: {theta_deg: 0.15, d_m: 0.005}   # prior growth of V per tracked frame when an anchor is not seen
-  gamma_min_gap: 5          # minimum gap (tracked frames) to learn Gamma from a re-match
   grid_h: 0.05
   L_kf: 10
   m_diff: 2

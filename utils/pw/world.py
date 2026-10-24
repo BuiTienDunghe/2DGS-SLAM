@@ -1,35 +1,35 @@
-"""PLAN A2G-P1 v2: plane world with a MEASURED anchor-map offset instead of an assumed drift model.
+"""PLAN A2G-P1 core: plane world for tracking built on one uncertainty model (utils/pw/uncertainty.py).
 
-* Anchor parameters (n, o, B, P) never change after creation (no EKF, no re-centring, no freezing); only the support
-  grid grows.
-* b_hat_j (OffsetEstimator) is estimated from the residuals of recent matches and used for decisions only
-  (IC, ambiguity, JC, merging) through y_j = x_j (+) b_hat_j. The pose constraint (plane_ctx, GN) uses x_j.
-* Gate pose T_gate = constant-velocity prediction; Q_pred = full 6x6 covariance of its own error.
-* Gamma (growth of V when an anchor is not seen) is learnt online from re-matches after gaps and revisit events.
-* Merging only between anchors that both have fresh data (tau >= k - W_b); the earlier anchor is kept.
-Never reads ground truth (I12).
+* Anchor parameters (n, o, B, P) fixed at creation; only the support grid grows at keyframes.
+* b_hat_j measured from unambiguous matches (stationary, no growth model); decisions use y_j = x_j (+) b_hat_j, the
+  pose constraint (plane_ctx, GN) uses the original x_j.
+* Gate pose = constant-velocity prediction, Q_pred = 6x6 covariance of its own error.
+* Life cycle: candidate / active / merged. An unassigned segment that is ambiguous with an active anchor j is a new
+  candidate when j took another segment this frame, otherwise it is deferred (event; revisit_candidate for the loop
+  module when j has no fresh data).
+* Every decision is nis <= chi2 with S from residual_cov. Never reads ground truth (I12).
 """
 import hashlib
 import json
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
 import torch
 
 from . import geometry as G
-from .association import ORIG, ambiguity, build_jc, ic_and_assign, init_from_jc, jc_stats, pair_terms, seg_grid_idx
-from .model import (CHI2_2, CHI2_3, OffsetEstimator, PredNoise, SensorNoise, ang_nis, chi2, jac_a, jac_b, nis,
-                    residual)
+from .association import ORIG, ambiguity, build_jc, ic_and_assign, init_from_jc, jc_stats, pair_S, pair_terms
 from .segments import build_segments, merge_in_frame
+from .uncertainty import (CHI2_2, CHI2_3, OffsetEstimator, PredNoise, SensorNoise, ang_nis, chi2, jac_a, jac_b, nis,
+                          residual, residual_cov)
 
-ALLOWED = {("candidate", "active"), ("conflict", "candidate"), ("conflict", "deleted"), ("candidate", "deleted")}
+ALLOWED = {("candidate", "active"), ("candidate", "deleted")}
 
 
 def np_pose(T):
-    """float64 pose with the rotation projected onto SO(3) (frontend poses drift off SO(3), see v1 report)."""
+    """float64 pose with the rotation projected onto SO(3) (frontend poses drift off SO(3))."""
     T = T.detach().cpu().double().numpy() if isinstance(T, torch.Tensor) else np.array(T, dtype=np.float64)
     U, _, Vt = np.linalg.svd(T[:3, :3])
     R = U @ Vt
@@ -42,7 +42,7 @@ def np_pose(T):
 
 
 @dataclass
-class AnchorP1:                     # world frame; n, o, B, P fixed at creation
+class AnchorP1:
     id: int
     primary_id: int
     n: np.ndarray
@@ -52,8 +52,7 @@ class AnchorP1:                     # world frame; n, o, B, P fixed at creation
     grid_o: np.ndarray
     grid_B: np.ndarray
     cells: set
-    state: str                      # candidate | active | conflict | merged
-    conflict_with: Optional[int]
+    state: str                      # candidate | active | merged
     T_ref: np.ndarray
     t_ref: int
     created_kf: int
@@ -61,8 +60,6 @@ class AnchorP1:                     # world frame; n, o, B, P fixed at creation
     hash0: str = ""
     matched_kf: int = 0
     inview_unmatched_kf: int = 0
-    conflict_quiet: int = 0
-    conflict_diff_seen: int = 0
 
 
 @dataclass
@@ -101,18 +98,12 @@ class PlaneWorld:
         self.cfg = cfg
         self.K = np.asarray(K.detach().cpu().double().numpy() if isinstance(K, torch.Tensor) else K, dtype=np.float64)
         self.H, self.W = int(H), int(W)
-        self.legacy = legacy
         se = cfg.get("sensor", {}) or {}
         self.sensor = SensorNoise(se.get("a", 0.0), se.get("b", 1.425e-3), se.get("sigma_theta0_deg", 0.5),
                                   se.get("sigma_d0_m", 0.005))
         pi = cfg.get("pred_init", {}) or {}
         self.pred = PredNoise(cfg.get("pred_window", 30), pi.get("sigma_rho_m", 0.01), pi.get("sigma_theta_deg", 0.5))
         self.Wb = int(cfg.get("offset_window", 30))
-        g0 = cfg.get("gamma0", {}) or {}
-        th = np.deg2rad(float(g0.get("theta_deg", 0.15)))
-        self.Gamma0 = np.array([th ** 2, th ** 2, float(g0.get("d_m", 0.005)) ** 2])
-        self.gamma_samples = [self.Gamma0.copy()]    # P1-v2.1: prior = one sample; component-wise median
-        self.gamma_min_gap = int(cfg.get("gamma_min_gap", 5))
         self.h = float(cfg.get("grid_h", 0.05))
         self.L = int(cfg.get("L_kf", 10))
         self.m_diff = int(cfg.get("m_diff", 2))
@@ -126,16 +117,15 @@ class PlaneWorld:
         self.anchors = {}
         self.next_id = 0
         self.diff = {}
-        self.T_hist = []                             # last two optimised poses (projected)
-        self.kt = 0                                  # tracked-frame counter (tau, Gamma, freshness use it)
+        self.T_hist = []
+        self.kt = 0                                  # tracked-frame counter (tau, freshness)
         self.cur = None
         self.ghash_kf = None
         self.n_invariant = 0
         self.violation_msgs = []
-        self.skip_merge_once = False                 # test hook (Q11 duplicate injection)
-        self.counters = dict(merges=0, conflicts=0, revisits=0, cand_deleted=0, jc_jump=0, jc_shape_drop=0,
-                             rank6=0, frames=0, plane_init=0, bias_accept=0, bias_reject=0, bias_reject_region=0,
-                             gamma_samples=0)
+        self.skip_merge_once = False                 # test hook (duplicate injection)
+        self.counters = dict(merges=0, deferred=0, revisit_candidates=0, cand_deleted=0, jc_jump=0, jc_shape_drop=0,
+                             rank6=0, frames=0, plane_init=0, bias_accept=0, bias_reject=0, bias_ambiguous=0)
         self.ms_pw = []
         self.f_frames = self.f_kf = self.f_ev = None
         self.out_dir = out_dir
@@ -146,21 +136,18 @@ class PlaneWorld:
             self.f_ev = open(os.path.join(out_dir, "pw_events.jsonl"), "w")
 
     # ------------------------------------------------------------------ helpers
-    @property
-    def Gamma(self):
-        """P1-v2.1: component-wise median of the unclipped samples (prior Gamma0 counted as one sample), clipped
-        at 0. PLAN v2 clipped every sample before averaging, which is biased upwards."""
-        return np.diag(np.clip(np.median(np.stack(self.gamma_samples), 0), 0, None))
-
     def primaries(self):
         return [a for a in self.anchors.values() if a.state != "merged"]
 
     def geom_y(self, a):
         return a.est.y(a.n, a.o, a.B, G.oplus)
 
-    def Vk_fn(self, k):
-        Gm = self.Gamma
-        return lambda a: a.est.cov_at(k, Gm)
+    @staticmethod
+    def V_of(a):
+        return a.est.V
+
+    def fresh(self, a):
+        return (self.kt - a.est.tau) < self.Wb
 
     def _event(self, d):
         if self.f_ev is not None:
@@ -189,15 +176,14 @@ class PlaneWorld:
             return segs
         return merge_in_frame(segs, planes, self.sensor)
 
-    def _new_anchor(self, seg, T, k, state, conflict_with=None):
+    def _new_anchor(self, seg, T, k, state):
         n, o, B = G.to_world(T, seg.n, seg.p, seg.B)
         n = n / np.linalg.norm(n)
         B = G.gram_schmidt(B, n)
         aid = self.next_id
         self.next_id += 1
         a = AnchorP1(id=aid, primary_id=aid, n=n, o=o, B=B, P=seg.R.copy(), grid_o=o.copy(), grid_B=B.copy(),
-                     cells=set(), state=state, conflict_with=conflict_with, T_ref=T.copy(), t_ref=int(k),
-                     created_kf=int(k))
+                     cells=set(), state=state, T_ref=T.copy(), t_ref=int(k), created_kf=int(k))
         a.est = OffsetEstimator(a.P, self.kt, self.Wb)
         a.hash0 = _hash(a.n, a.o, a.B, a.P)
         a.cells = G.cells_from_segment(seg.cells_ij, self.cs, self.K, seg.n, seg.d, T, a.grid_o, a.grid_B, self.h)
@@ -211,21 +197,18 @@ class PlaneWorld:
         return float(sv[2]) if sv.shape[0] >= 3 else 0.0
 
     def _ctx(self, segs, pose_pairs, device, dtype):
-        """plane_ctx in the E1c format, from the ORIGINAL anchors (I15)."""
+        """plane_ctx in the E1c format from the ORIGINAL anchors (I8)."""
         if not pose_pairs:
             return None, None
         n_w = np.stack([self.anchors[a].n for _, a in pose_pairs])
         d_w = np.array([-float(self.anchors[a].n @ self.anchors[a].o) for _, a in pose_pairs])
         w = torch.tensor([float(segs[s].meas.n_px) for s, _ in pose_pairs], dtype=torch.float64)
-        ctx = dict(
-            m=torch.tensor(np.stack([segs[s].n for s, _ in pose_pairs]), dtype=dtype, device=device),
-            n_w=torch.tensor(n_w, dtype=dtype, device=device),
-            d_meas=torch.tensor([segs[s].d for s, _ in pose_pairs], dtype=dtype, device=device),
-            d_w=torch.tensor(d_w, dtype=dtype, device=device),
-            w=(w / w.sum()).to(device=device, dtype=dtype),
-            inv_sn2=1.0 / self.sig_n ** 2,
-            inv_sd2=1.0 / self.sig_d ** 2,
-        )
+        ctx = dict(m=torch.tensor(np.stack([segs[s].n for s, _ in pose_pairs]), dtype=dtype, device=device),
+                   n_w=torch.tensor(n_w, dtype=dtype, device=device),
+                   d_meas=torch.tensor([segs[s].d for s, _ in pose_pairs], dtype=dtype, device=device),
+                   d_w=torch.tensor(d_w, dtype=dtype, device=device),
+                   w=(w / w.sum()).to(device=device, dtype=dtype),
+                   inv_sn2=1.0 / self.sig_n ** 2, inv_sd2=1.0 / self.sig_d ** 2)
         return ctx, _hash(n_w, d_w)
 
     def T_gate(self, T_pred):
@@ -245,8 +228,8 @@ class PlaneWorld:
             self._new_anchor(sg, T, k, "active")
         self.T_hist = [T]
         self.ghash_kf = self.ghash()
-        self._write_kf(dict(k=int(k), created=[dict(id=a.id, state="active", reason="frame0")
-                                               for a in self.anchors.values()], transitions=[], Gamma=np.diag(self.Gamma),
+        self._write_kf(dict(k=int(k), kt=0, created=[dict(id=a.id, state="active", reason="frame0")
+                                                     for a in self.anchors.values()], transitions=[], deferred=[],
                             n_primary=len(self.primaries())))
         return dict(planes=[s.meas for s in segs], pairs=[], init_source="prev", sigma_min=float("nan"),
                     ms_extract=0.0, ms_match=1000 * (time.perf_counter() - t0), ms_solve=0.0, T_init=T0, active_ids=[])
@@ -256,18 +239,15 @@ class PlaneWorld:
         t0 = time.perf_counter()
         self.kt += 1
         if self.ghash_kf is not None and self.ghash() != self.ghash_kf:
-            self._violation("I6", "anchor geometry changed outside a keyframe")
-        Tp_np = np_pose(T_pred)
-        Tg = self.T_gate(Tp_np)
+            self._violation("I4", "anchor geometry changed outside a keyframe")
+        Tg = self.T_gate(np_pose(T_pred))
         segs = self._segs(planes)
         Q = self.pred.Q()
         prim = self.primaries()
-        Vk = self.Vk_fn(self.kt)
-        cand, assign, info = ic_and_assign(segs, prim, Tg, self.geom_y, Vk, Q, h=self.h)       # P1-v2.1
+        cand, assign, info = ic_and_assign(segs, prim, Tg, self.geom_y, self.V_of, Q, h=self.h)
         t1 = time.perf_counter()
-        ambig = ambiguity(segs, assign, prim, Tg, self.geom_y, Vk, self.h, Q)
         pose = [(s, j) for s, j in assign if self.anchors[j].state == "active"]
-        res = init_from_jc(pose, segs, self.anchors, Tg, Q, self.geom_y, Vk, self.obs_thr, self.gn_iters)
+        res = init_from_jc(pose, segs, self.anchors, Tg, Q, self.geom_y, self.V_of, self.obs_thr, self.gn_iters)
         if res["removed"]:
             assign = [p for p in assign if p not in res["removed"]]
             self.counters["jc_shape_drop"] += len(res["removed"])
@@ -280,13 +260,13 @@ class PlaneWorld:
             free_s = [i for i in range(len(segs)) if i not in used_s]
             free_a = {a.id for a in prim if a.id not in used_a}
             if free_s and free_a:
-                c2, a2, info2 = ic_and_assign(segs, prim, T_init, self.geom_y, Vk, res["Ip"], restrict_s=free_s,
-                                              restrict_a=free_a, h=self.h)                            # P1-v2.1
+                c2, a2, info2 = ic_and_assign(segs, prim, T_init, self.geom_y, self.V_of, res["Ip"], restrict_s=free_s,
+                                              restrict_a=free_a, h=self.h)
                 if a2:
                     new_pose = [(s, j) for s, j in a2 if self.anchors[j].state == "active"]
                     ok = True
                     if new_pose:
-                        st = jc_stats(*build_jc(pose_pairs + new_pose, segs, self.anchors, Tg, Q, self.geom_y, Vk))
+                        st = jc_stats(*build_jc(pose_pairs + new_pose, segs, self.anchors, Tg, Q, self.geom_y, self.V_of))
                         ok = st["dof_shape"] <= 0 or st["shape"] <= chi2(st["dof_shape"])
                     if ok:
                         added = a2
@@ -301,24 +281,28 @@ class PlaneWorld:
             self.counters["rank6"] += 1
         self.counters["frames"] += 1
         ctx, ctx_hash = self._ctx(segs, pose_pairs, T_pred.device, T_pred.dtype)
-        if pose_pairs:                                       # I15: ctx built from the original anchors
+        if pose_pairs:
             ref = _hash(np.stack([self.anchors[a].n for _, a in pose_pairs]),
                         np.array([-float(self.anchors[a].n @ self.anchors[a].o) for _, a in pose_pairs]))
             if ref != ctx_hash:
-                self._violation("I15", "plane_ctx not built from the original anchors")
+                self._violation("I8", "plane_ctx not built from the original anchors")
         T_init_t = (torch.from_numpy(T_init).to(device=T_pred.device, dtype=T_pred.dtype) if source == "plane"
                     else T_pred)
+        flags = {}
+        for c in cand:                                   # flags of the candidate that produced each assignment
+            key = (c["s"], c["j"])
+            if c.get("at", "T_gate") == ("T_p" if key in added else "T_gate"):
+                flags[key] = (bool(c.get("unambiguous", False)), int(c.get("region_level", -1)))
         bhat = [float(np.linalg.norm(self.anchors[j].est.b)) for _, j in pose_pairs]
-        self.cur = dict(k=int(k), kt=self.kt, segs=segs, T_gate=Tg, assign=assign, pose_pairs=pose_pairs, ambig=ambig, cand=cand,
-                        info=info, jc=res["jc"], source=source, dxi=res["dxi"], Q=Q, added=added, dT=dT,
+        self.cur = dict(k=int(k), kt=self.kt, segs=segs, T_gate=Tg, assign=assign, pose_pairs=pose_pairs, cand=cand,
+                        info=info, jc=res["jc"], source=source, dxi=res["dxi"], Q=Q, added=added, dT=dT, flags=flags,
                         bhat_mean=float(np.mean(bhat)) if bhat else None, gn_start=res.get("gn_start"))
         self._check_frame()
-        t2 = time.perf_counter()
-        ms = 1000 * (t2 - t0)
+        ms = 1000 * (time.perf_counter() - t0)
         self.ms_pw.append(ms)
         plane_info = dict(planes=[s.meas for s in segs], pairs=assign, init_source=source,
                           sigma_min=self._sigma_min(segs, pose_pairs), ms_extract=0.0, ms_match=1000 * (t1 - t0),
-                          ms_solve=1000 * (t2 - t1), T_init=T_init_t, active_ids=[j for _, j in pose_pairs], ms_pw=ms)
+                          ms_solve=ms - 1000 * (t1 - t0), T_init=T_init_t, active_ids=[j for _, j in pose_pairs], ms_pw=ms)
         return FrameOut(init_pose=T_init_t, init_source=source, ctx=ctx, plane_info=plane_info)
 
     def _check_frame(self):
@@ -330,9 +314,6 @@ class PlaneWorld:
             v = c["info"].get((s, j), (None,))[0]
             if v is not None and v > CHI2_3 + 1e-9:
                 self._violation("I2", f"assigned pair ({s},{j}) NIS {v:.2f}")
-            a = self.anchors[j]
-            if a.state == "conflict" and c["info"].get((s, a.conflict_with), (np.inf,))[0] <= CHI2_3:
-                self._violation("I4", f"conflict {j} got segment {s} that {a.conflict_with} passes")
         for _, j in c["pose_pairs"]:
             if self.anchors[j].state != "active":
                 self._violation("I3", f"pose pair with {self.anchors[j].state} anchor {j}")
@@ -343,29 +324,23 @@ class PlaneWorld:
             if not (jc["rank"] == 6 and jc["jump"] <= chi2(6)):
                 self._violation("I10", f"plane init with rank {jc['rank']} jump {jc['jump']:.2f}")
 
-    # ------------------------------------------------------------------ after tracking: Q_pred, b_hat samples
-    def _bias_sample(self, seg, a, T, k):
-        # P1-v2.1: a sample needs spatial evidence (segment overlaps/touches the support region of the anchor)
-        if not G.overlap_or_adjacent(seg_grid_idx(seg, T, a, self.h), a.cells):
-            self.counters["bias_reject_region"] += 1
-            return dict(z=None, accepted=False, m=None, fresh=bool((k - a.est.tau) < self.Wb), region=False)
+    # ------------------------------------------------------------------ after tracking
+    def _bias_sample(self, seg, a, T, unambiguous):
+        if not unambiguous:                              # PLAN core §3.2: only unambiguous pairs are samples (I6)
+            self.counters["bias_ambiguous"] += 1
+            return dict(z=None, accepted=False, m=None, unambiguous=False)
         r, Ja, Jb, _ = pair_terms(seg, ORIG(a), T)
         Jbi = np.linalg.inv(Jb)
         z = -Jbi @ r
         Rz = Jbi @ (Ja @ seg.R @ Ja.T) @ Jbi.T
         Rz = 0.5 * (Rz + Rz.T)
-        fresh = (k - a.est.tau) < self.Wb
-        ok, m, gamma_obs = a.est.sample(z, Rz, k, self.Gamma, self.gamma_min_gap)
-        if ok:
-            self.counters["bias_accept"] += 1
-            if gamma_obs is not None:
-                self.gamma_samples.append(gamma_obs)
-                self.counters["gamma_samples"] += 1
-        else:
-            self.counters["bias_reject"] += 1
+        ok, m = a.est.sample(z, Rz, self.kt)
+        self.counters["bias_accept" if ok else "bias_reject"] += 1
+        if ok and m > CHI2_3 + 1e-9:
+            self._violation("I6", f"sample accepted with m {m:.2f}")
         if np.min(np.linalg.eigvalsh(a.est.V)) <= 0:
-            self._violation("I8", f"V of {a.id} not positive definite")
-        return dict(z=z, accepted=bool(ok), m=m, fresh=bool(fresh), region=True)
+            self._violation("I5", f"V of {a.id} not positive definite")
+        return dict(z=z, accepted=bool(ok), m=m, unambiguous=True)
 
     def after_tracking(self, k, T_opt):
         c = self.cur
@@ -374,9 +349,11 @@ class PlaneWorld:
         pairs_log = []
         for s, j in c["assign"]:
             a = self.anchors[j]
-            fresh = (self.kt - a.est.tau) < self.Wb
-            bs = self._bias_sample(c["segs"][s], a, T, self.kt)
-            pairs_log.append(dict(s=s, j=j, nis=c["info"].get((s, j), (None,))[0], fresh=bool(fresh), bias_sample=bs))
+            fresh = self.fresh(a)
+            unamb, level = c["flags"].get((s, j), (False, -1))
+            bs = self._bias_sample(c["segs"][s], a, T, unamb)
+            pairs_log.append(dict(s=s, j=j, nis=c["info"].get((s, j), (None,))[0], fresh=bool(fresh),
+                                  unambiguous=unamb, region_level=level, bias_sample=bs))
         self.T_hist = (self.T_hist + [T])[-2:]
         ids = sorted(self.anchors[j].primary_id for _, j in c["assign"])
         for i in range(len(ids)):
@@ -385,8 +362,9 @@ class PlaneWorld:
         if self.f_frames is not None:
             row = dict(k=c["k"], kt=self.kt, segs=[dict(src=s.src, N_s=s.N_s, n=s.n, p=s.p) for s in c["segs"]],
                        cand=[dict(s=x["s"], j=x["j"], state=x["state"], nis=x["nis"], ic=x["ic"],
-                                  blocked=x.get("blocked", False), at=x.get("at", "T_gate")) for x in c["cand"]],
-                       assign=c["assign"], pose=c["pose_pairs"], ambig=c["ambig"], added=c["added"], pairs=pairs_log,
+                                  region_level=x.get("region_level"), unambiguous=x.get("unambiguous"),
+                                  at=x.get("at", "T_gate")) for x in c["cand"]],
+                       assign=c["assign"], pose=c["pose_pairs"], added=c["added"], pairs=pairs_log,
                        jc=c["jc"], init=dict(source=c["source"], dxi=c["dxi"], dT_gate=c["dT"], gn_start=c["gn_start"],
                                              bhat_mean=c["bhat_mean"]),
                        Qpred=c["Q"], T_gate=c["T_gate"][:3, :], T_opt=T[:3, :], ghash=self.ghash())
@@ -404,24 +382,24 @@ class PlaneWorld:
         Z = depth.detach().cpu().float().numpy() if isinstance(depth, torch.Tensor) else np.asarray(depth)
         segs = c["segs"]
         prim = self.primaries()
-        kt = self.kt
-        Vk = self.Vk_fn(kt)
-        cand, assign, info = ic_and_assign(segs, prim, T, self.geom_y, Vk, None, h=self.h)     # P1-v2.1
-        ambig = ambiguity(segs, assign, prim, T, self.geom_y, Vk, self.h, None)
-        def _parts(s, j):                                       # angle (2 dof) and distance (1 dof) parts of the NIS
+        cand, assign, info = ic_and_assign(segs, prim, T, self.geom_y, self.V_of, None, h=self.h)
+        ambig = ambiguity(segs, assign, prim, T, self.geom_y, self.V_of, self.h, None)
+
+        def _parts(s, j):
             _, S_, r_ = info[(s, j)]
             return float(r_[:2] @ np.linalg.solve(S_[:2, :2], r_[:2])), float(r_[2] ** 2 / S_[2, 2])
 
-        kf = dict(k=int(k), kt=kt, reassign=[dict(s=s, j=j, nis=info[(s, j)][0], nis_ang=_parts(s, j)[0],
-                                           nis_d=_parts(s, j)[1],
-                                           fresh=bool((kt - self.anchors[j].est.tau) < self.Wb)) for s, j in assign],
-                  ambig=ambig, created=[], transitions=[], merges=[])
-        for s, j in assign:                                    # support region only (geometry fixed)
+        unamb = {(x["s"], x["j"]): bool(x.get("unambiguous", False)) for x in cand}
+        kf = dict(k=int(k), kt=self.kt, reassign=[dict(s=s, j=j, nis=info[(s, j)][0], nis_ang=_parts(s, j)[0],
+                                                     nis_d=_parts(s, j)[1], unambiguous=unamb.get((s, j), False),
+                                                     fresh=self.fresh(self.anchors[j])) for s, j in assign],
+                  created=[], transitions=[], merges=[], deferred=[])
+        for s, j in assign:
             a = self.anchors[j]
             sg = segs[s]
             a.cells |= G.cells_from_segment(sg.cells_ij, self.cs, self.K, sg.n, sg.d, T, a.grid_o, a.grid_B, self.h)
         used = {s for s, _ in assign}
-        assigned_anchors = {j for _, j in assign}
+        assigned = {j for _, j in assign}
         amb = {}
         for s, j in ambig:
             amb.setdefault(s, []).append(j)
@@ -430,171 +408,116 @@ class PlaneWorld:
             if s in used:
                 continue
             js = amb.get(s, [])
-            free = [j for j in js if j not in assigned_anchors]
-            if free:
-                a = self._new_anchor(sg, T, k, "conflict", conflict_with=free[0])
-                reason = f"ambiguous_with_{free[0]}"
-                self.counters["conflicts"] += 1
-            else:
-                a = self._new_anchor(sg, T, k, "candidate")
-                reason = "new"
-                for j in js:
-                    pj = self.anchors[j].primary_id
-                    key = (min(a.id, pj), max(a.id, pj))
-                    self.diff[key] = max(self.diff.get(key, 0), 1)
-                if js:
-                    reason = f"ambiguous_with_assigned_{js[0]}"
-            a.conflict_diff_seen = self._diff(a.id, a.conflict_with) if a.conflict_with is not None else 0
+            if js and all(j not in assigned for j in js):
+                j = js[0]                                   # ambiguous, j not assigned: defer (PLAN core §3.6)
+                a = self.anchors[j]
+                d = dict(s=s, j=j, fresh_j=self.fresh(a))
+                kf["deferred"].append(d)
+                self.counters["deferred"] += 1
+                self._event(dict(type="deferred", k=int(k), **d))
+                if not self.fresh(a):
+                    r, S, *_ = pair_S(sg, self.geom_y(a), a.est.V, T, None)
+                    self.counters["revisit_candidates"] += 1
+                    self._event(dict(type="revisit_candidate", k=int(k), s=s, j=j, r=r, S=S,
+                                     gap=self.kt - a.est.tau))
+                continue
+            a = self._new_anchor(sg, T, k, "candidate")
+            reason = "new"
+            for j in js:                                    # ambiguous with an assigned j: certainly another surface
+                pj = self.anchors[j].primary_id
+                key = (min(a.id, pj), max(a.id, pj))
+                self.diff[key] = max(self.diff.get(key, 0), 1)
+                reason = f"ambiguous_with_assigned_{j}"
             new_ids.add(a.id)
             kf["created"].append(dict(id=a.id, state=a.state, reason=reason))
-        Gm = self.Gamma
         for a in self.primaries():
             if a.id in new_ids:
                 continue
-            if a.id in assigned_anchors:
+            if a.id in assigned:
                 a.matched_kf += 1
                 a.inview_unmatched_kf = 0
                 continue
-            Vd = a.est.cov_at(kt, Gm)[2, 2]
-            nvis = G.n_visible_cells(a.cells, a.grid_o, a.grid_B, self.h, T, self.K, Z, self.sensor.sigma_z,
-                                     float(np.sqrt(Vd)), self.H, self.W)
-            inview = nvis >= self.inview_min
-            if inview:
+            nvis = G.n_visible_cells(a.cells, a.grid_o, a.grid_B, self.h, T, self.K, Z, self.sensor.sigma_z, 0.0,
+                                     self.H, self.W)
+            if nvis >= self.inview_min:
                 a.inview_unmatched_kf += 1
-            if a.state == "conflict" and inview:
-                d = self._diff(a.id, a.conflict_with)
-                if d <= a.conflict_diff_seen:
-                    a.conflict_quiet += 1
-                a.conflict_diff_seen = d
         for a in list(self.primaries()):
-            if a.id in new_ids:
+            if a.id in new_ids or a.state != "candidate":
                 continue
-            frm, to = a.state, None
-            if a.state == "conflict":
-                js = self.anchors.get(a.conflict_with)
-                if js is None:
-                    to = "candidate"
-                else:
-                    if js.state == "merged":
-                        a.conflict_with = js.primary_id
-                        js = self.anchors[a.conflict_with]
-                    if self._diff(a.id, a.conflict_with) >= self.m_diff:
-                        to = "candidate"
-                    elif a.conflict_quiet >= self.L:
-                        to = "deleted"
-                        self._revisit(a, js, T, k)
-            elif a.state == "candidate":
-                if a.matched_kf >= 1:
-                    to = "active"
-                elif a.inview_unmatched_kf >= self.L:
-                    to = "deleted"
-                    self.counters["cand_deleted"] += 1
-            if to is not None:
-                if (frm, to) not in ALLOWED:
-                    self._violation("I11", f"transition {frm}->{to}")
-                kf["transitions"].append([a.id, frm, to])
-                if to == "deleted":
-                    self._event(dict(type="delete", k=int(k), id=a.id, state=frm))
-                    del self.anchors[a.id]
-                    for x in self.anchors.values():
-                        if x.conflict_with == a.id:
-                            x.conflict_with = None
-                else:
-                    a.state = to
+            to = "active" if a.matched_kf >= 1 else ("deleted" if a.inview_unmatched_kf >= self.L else None)
+            if to is None:
+                continue
+            if ("candidate", to) not in ALLOWED:
+                self._violation("I7", f"transition candidate->{to}")
+            kf["transitions"].append([a.id, "candidate", to])
+            if to == "deleted":
+                self.counters["cand_deleted"] += 1
+                self._event(dict(type="delete", k=int(k), id=a.id))
+                del self.anchors[a.id]
+            else:
+                a.state = "active"
         while True:
-            best = self._best_merge(kt)
+            best = self._best_merge()
             if best is None:
                 break
-            kf["merges"].append(self._merge(*best, k, kt))
+            kf["merges"].append(self._merge(*best, k))
         for a in self.anchors.values():
             if _hash(a.n, a.o, a.B, a.P) != a.hash0:
-                self._violation("I5", f"anchor {a.id} parameters changed")
+                self._violation("I4", f"anchor {a.id} parameters changed")
             if a.state == "merged" and (a.primary_id not in self.anchors or self.anchors[a.primary_id].state == "merged"):
                 self._violation("I9", f"secondary {a.id} -> {a.primary_id}")
-        if np.any(np.diag(self.Gamma) < 0):
-            self._violation("I8", "Gamma negative")
         kf["n_primary"] = len(self.primaries())
-        kf["states"] = {st: sum(1 for a in self.primaries() if a.state == st) for st in ("candidate", "active", "conflict")}
-        kf["Gamma"] = np.diag(self.Gamma)
-        kf["bias_reject"] = self.counters["bias_reject"]
-        kf["bias_accept"] = self.counters["bias_accept"]
-        kf["bias_reject_region"] = self.counters["bias_reject_region"]
-        kf["gamma_n"] = len(self.gamma_samples)
+        kf["states"] = {st: sum(1 for a in self.primaries() if a.state == st) for st in ("candidate", "active")}
+        kf["bias"] = {x: self.counters[x] for x in ("bias_accept", "bias_reject", "bias_ambiguous")}
         self._write_kf(kf)
         self.ghash_kf = self.ghash()
 
-    def _revisit(self, c, js, T, k):
-        """Conflict c deleted after L quiet keyframes: revisit event and a Gamma sample (PLAN v2 §3.4 ii)."""
-        yn, yo, yB = self.geom_y(js)
-        an, ao, aB = G.to_camera(T, c.n, c.o, c.B)
-        bn, bo, bB = G.to_camera(T, yn, yo, yB)
-        r = residual(an, ao, bn, bo, bB)
-        Jbi = np.linalg.inv(jac_b(an, ao, bn, bo, bB))
-        z = -Jbi @ r
-        gap = max(1, self.kt - js.est.tau)
-        gam = np.diag(np.outer(z, z) - js.est.V - c.P) / gap
-        self.counters["revisits"] += 1
-        touch = self._regions_touch(js, c)                      # P1-v2.1: Gamma sample only with spatial evidence
-        if touch:
-            self.gamma_samples.append(gam)
-            self.counters["gamma_samples"] += 1
-        self._event(dict(type="revisit", k=int(k), c=c.id, jstar=js.id, r=r, z=z, gap=gap, gamma=gam,
-                         gamma_used=bool(touch)))
-
     def _aa(self, a, b):
-        """r(y_a | y_b) in the world with S = J_a V_a J_a^T + J_b V_b J_b^T (no pose term, no Gamma)."""
+        """r(y_a | y_b) in the world with S = J_a V_a J_a^T + J_b V_b J_b^T."""
         an, ao, aB = self.geom_y(a)
         bn, bo, bB = self.geom_y(b)
         r = residual(an, ao, bn, bo, bB)
-        Ja, Jb = jac_a(an, aB, bn, bB), jac_b(an, ao, bn, bo, bB)
-        S = Ja @ a.est.V @ Ja.T + Jb @ b.est.V @ Jb.T
-        return r, 0.5 * (S + S.T)
-
-    def _regions_touch(self, a, b):
-        if not a.cells or not b.cells:
-            return False
-        X = G.grid_centres(b.cells, b.grid_o, b.grid_B, self.h)
-        return G.overlap_or_adjacent(G.grid_index(X, a.grid_o, a.grid_B, self.h), a.cells)
+        return r, residual_cov(jac_a(an, aB, bn, bB), a.est.V, jac_b(an, ao, bn, bo, bB), b.est.V)
 
     def _common_cells(self, a, b):
-        """P1-v2.1: number of cells of b that land on a cell of a after projection into the grid of a."""
         if not a.cells or not b.cells:
             return 0
         X = G.grid_centres(b.cells, b.grid_o, b.grid_B, self.h)
         return sum(1 for x in G.grid_index(X, a.grid_o, a.grid_B, self.h).tolist() if tuple(x) in a.cells)
 
-    def _best_merge(self, k):
-        prim = [a for a in self.primaries() if a.state != "conflict" and a.est.tau >= k - self.Wb]
+    def _merge_ok(self, aj, ak):
+        if self._diff(aj.id, ak.id) >= self.m_diff or not (self.fresh(aj) and self.fresh(ak)):
+            return None
+        if self._common_cells(aj, ak) < 1:
+            return None
+        r1, S1 = self._aa(ak, aj)
+        if ang_nis(r1, S1) > CHI2_2:
+            return None
+        r2, S2 = self._aa(aj, ak)
+        v1, v2 = nis(r1, S1), nis(r2, S2)
+        if v1 <= CHI2_3 and v2 <= CHI2_3:
+            return max(v1, v2), (r1, S1, v1, v2)
+        return None
+
+    def _best_merge(self):
+        prim = self.primaries()
         best = None
         for i in range(len(prim)):
             for l in range(i + 1, len(prim)):
-                aj, ak = prim[i], prim[l]
-                if self._diff(aj.id, ak.id) >= self.m_diff:
-                    continue
-                r1, S1 = self._aa(ak, aj)
-                if ang_nis(r1, S1) > CHI2_2 or self._common_cells(aj, ak) < 1:          # P1-v2.1 overlap
-                    continue
-                r2, S2 = self._aa(aj, ak)
-                v1, v2 = nis(r1, S1), nis(r2, S2)
-                if v1 <= CHI2_3 and v2 <= CHI2_3 and (best is None or max(v1, v2) < best[2]):
-                    best = (aj.id, ak.id, max(v1, v2), (r1, S1, v1, v2))
+                res = self._merge_ok(prim[i], prim[l])
+                if res is not None and (best is None or res[0] < best[2]):
+                    best = (prim[i].id, prim[l].id, res[0], res[1])
         return best
 
-    def _merge(self, jid, kid, key, extra, k, kt):
+    def _merge(self, jid, kid, key, extra, k):
         aj, ak = self.anchors[jid], self.anchors[kid]
-        if self._diff(jid, kid) >= self.m_diff or "conflict" in (aj.state, ak.state):
-            self._violation("I7", f"merge of {jid},{kid} in E or conflict")
-        if self._common_cells(aj, ak) < 1:
-            self._violation("I16", f"merge of {jid},{kid} without common cells")
-        if min(aj.est.tau, ak.est.tau) < kt - self.Wb:
-            self._violation("I14", f"merge of {jid},{kid} without fresh data")
-        if (aj.t_ref, -aj.matched_kf) <= (ak.t_ref, -ak.matched_kf):
-            keep, drop = aj, ak
-        else:
-            keep, drop = ak, aj
+        if self._merge_ok(aj, ak) is None:
+            self._violation("I7", f"merge of {jid},{kid} without all conditions")
+        keep, drop = (aj, ak) if (aj.t_ref, -aj.matched_kf, aj.id) <= (ak.t_ref, -ak.matched_kf, ak.id) else (ak, aj)
         yk, yd = self.geom_y(keep), self.geom_y(drop)
-        ev = dict(type="merge", k=int(k), kt=int(kt), common_cells=self._common_cells(aj, ak), keep=keep.id, drop=drop.id, nis=[extra[2], extra[3]], r=extra[0], S=extra[1],
-                  tau=[keep.est.tau, drop.est.tau], bhat=[keep.est.b, drop.est.b], V=[keep.est.V, drop.est.V],
+        ev = dict(type="merge", k=int(k), kt=self.kt, keep=keep.id, drop=drop.id, nis=[extra[2], extra[3]],
+                  common_cells=self._common_cells(aj, ak), tau=[keep.est.tau, drop.est.tau],
+                  bhat=[keep.est.b, drop.est.b], V=[keep.est.V, drop.est.V],
                   keep_par=dict(n=keep.n, o=keep.o, state=keep.state, n_cells=len(keep.cells), t_ref=keep.t_ref),
                   drop_par=dict(n=drop.n, o=drop.o, state=drop.state, n_cells=len(drop.cells), t_ref=drop.t_ref),
                   dist_at_o_drop=float(yk[0] @ (yd[1] - yk[1])),
@@ -617,8 +540,6 @@ class PlaneWorld:
         for x in self.anchors.values():
             if x.primary_id == drop.id:
                 x.primary_id = keep.id
-            if x.conflict_with == drop.id:
-                x.conflict_with = keep.id
         self.counters["merges"] += 1
         self._event(ev)
         return dict(keep=keep.id, drop=drop.id, nis=[extra[2], extra[3]])
@@ -633,8 +554,8 @@ class PlaneWorld:
         d = dict(id=a.id, n_w=a.n.tolist(), d_w=-float(a.n @ a.o), n_obs_kf=a.matched_kf + 1,
                  active=a.state == "active", created_kf=a.created_kf, n_samples=len(a.cells), primary_id=a.primary_id,
                  state=a.state, o=a.o.tolist(), P=a.P.tolist(), t_ref=a.t_ref, n_cells=len(a.cells),
-                 conflict_with=a.conflict_with, bhat=a.est.b.tolist(), V=a.est.V.tolist(), tau=a.est.tau,
-                 f=a.est.f, n_accept=a.est.n_accept, n_reject=a.est.n_reject)
+                 bhat=a.est.b.tolist(), V=a.est.V.tolist(), tau=a.est.tau, f=a.est.f, n_accept=a.est.n_accept,
+                 n_reject=a.est.n_reject)
         if cells:
             d["cells"] = sorted(list(c) for c in a.cells)
             d["grid_o"], d["grid_B"] = a.grid_o.tolist(), a.grid_B.tolist()
@@ -652,7 +573,6 @@ class PlaneWorld:
     def summary(self):
         d = dict(self.counters)
         d.update(n_invariant=self.n_invariant, n_primary_final=self.n_primary(), n_active_final=self.n_active(),
-                 Gamma_final=np.diag(self.Gamma).tolist(),
                  ms_pw_mean=float(np.mean(self.ms_pw)) if self.ms_pw else None,
                  ms_pw_p95=float(np.percentile(self.ms_pw, 95)) if self.ms_pw else None)
         return d
@@ -661,7 +581,7 @@ class PlaneWorld:
         if self.out_dir is not None:
             with open(os.path.join(self.out_dir, "anchors_final.json"), "w") as f:
                 json.dump(_j(dict(anchors=[self._row(a, cells=True) for a in self.anchors.values()],
-                                  Gamma=np.diag(self.Gamma), counters=self.counters)), f)
+                                  counters=self.counters)), f)
         for f in (self.f_frames, self.f_kf, self.f_ev):
             if f is not None:
                 f.close()

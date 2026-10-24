@@ -11,7 +11,7 @@ import torch
 
 from utils.plane_anchor import PlaneMeas
 from utils.pw import geometry as G
-from utils.pw.model import CHI2_3
+from utils.pw.uncertainty import CHI2_3, residual, resolvable
 from utils.pw.world import PlaneWorld
 
 H, W, CS = 480, 640, 20
@@ -20,9 +20,10 @@ KINV = np.linalg.inv(K)
 MAXD = 4.0
 N_FRAMES, KF_EVERY = 400, 10
 SEG_ERR = 1.0          # 1: per-segment-per-frame plane error at the default floors; 0: plan text (depth noise only)
+SIGMA0 = (0.5, 0.005)  # (deg, m): floors used by the plane world AND by model-A data; set to the locked values
 CFG = dict(sensor=dict(a=0.0, b=1.425e-3, sigma_theta0_deg=0.5, sigma_d0_m=0.005), pred_window=30,
            pred_init=dict(sigma_rho_m=0.01, sigma_theta_deg=0.5), offset_window=30,
-           gamma0=dict(theta_deg=0.15, d_m=0.005), gamma_min_gap=5, grid_h=0.05, L_kf=10, m_diff=2,
+           grid_h=0.05, L_kf=10, m_diff=2,
            inview_min_cells=3, obs_threshold=0.3, gn_iters=3, debug_checks=False)
 
 
@@ -151,8 +152,8 @@ def measure(T_true, rng, split=None):
         # per-segment-per-frame plane error (default floors, §3.2a)
         for g in groups:
             B = G.basis(n_c)
-            dth = rng.normal(0, np.deg2rad(0.5), 2) * SEG_ERR
-            dd = rng.normal(0, 0.005) * SEG_ERR
+            dth = rng.normal(0, np.deg2rad(SIGMA0[0]), 2) * SEG_ERR
+            dd = rng.normal(0, SIGMA0[1]) * SEG_ERR
             rays = sub[g]                                    # (Ng, 16, 3)
             lam0 = -d_c / (rays @ n_c)
             X0 = rays * lam0[..., None]
@@ -194,8 +195,13 @@ def depth_image(T_true):
     return z.reshape(H, W).astype(np.float32)
 
 
+ALIAS = {"E0": "P8", "E1": "P1", "E2": "P5", "E3": "P3", "E4": "P7"}
+
+
 def drift(kind, t, s, yaw, rng_state):
-    """e(t) in xi = [rho, theta] (left perturbation of T_cw)."""
+    """e(t) in xi = [rho, theta] (left perturbation of T_cw). PLAN core T8: E0 none, E1 linear in path, E2 5 cm
+    jump at 150, E3 +-20 deg swing, E4 leave the start region for 100+ frames and come back with 8 cm."""
+    kind = ALIAS.get(kind, kind)
     e = np.zeros(6)
     if kind == "P1":                                     # linear in path length
         e[:3] = s * np.array([0.012, 0.0, 0.008])
@@ -234,7 +240,9 @@ def run_case(kind, seed, inject_wrong_at=None, dup_frames=(100, 250), slip=None)
         e = drift(kind, t, s_acc[t], yaws[t], st)
         jit = np.concatenate([rng.normal(0, 0.001, 3), rng.normal(0, np.deg2rad(0.05), 3)]) if t > 0 else np.zeros(6)
         Topt.append(G.se3_exp(jit) @ G.se3_exp(e) @ Tt[t])
-    pw = PlaneWorld(CFG, K, H, W, legacy=None, out_dir=None)
+    cfg = dict(CFG)
+    cfg["sensor"] = dict(CFG["sensor"], sigma_theta0_deg=SIGMA0[0], sigma_d0_m=SIGMA0[1])
+    pw = PlaneWorld(cfg, K, H, W, legacy=None, out_dir=None)
     tt = lambda T: torch.from_numpy(T)
     planes, truth = measure(Tt[0], rng)
     pw.on_first_frame(0, planes, tt(Topt[0]))
@@ -256,6 +264,9 @@ def run_case(kind, seed, inject_wrong_at=None, dup_frames=(100, 250), slip=None)
     nis_fresh, n_assign, n_correct, seen_kf = [], 0, 0, {}
     confusion = {}
     wrong_log = []
+    n_wrong_res, n_wrong_unres, pose_wrong_res = 0, 0, 0
+    unres_planes = set()
+    n_unres_total, n_unres_correct = 0, 0
     wrong = None
     for k in range(1, N_FRAMES):
         is_kf = (k % KF_EVERY) == 0
@@ -273,13 +284,34 @@ def run_case(kind, seed, inject_wrong_at=None, dup_frames=(100, 250), slip=None)
             pt = a_truth.get(pw.anchors[a.primary_id].id, a_truth.get(j))
             n_assign += 1
             n_correct += int(pt == seg_truth[s])
+            if NAMES[seg_truth[s]] in ("A", "P4"):
+                n_unres_total += 1
+                n_unres_correct += int(pt == seg_truth[s])
+            res_ok = True
+            if pt is not None:
+                X, Y = SCENE[seg_truth[s]], SCENE[pt]
+                Tk = Tt[k]
+                nX = Tk[:3, :3] @ X.n
+                nY = Tk[:3, :3] @ Y.n
+                oY = Tk[:3, :3] @ Y.p0 + Tk[:3, 3]
+                sg = c["segs"][s]
+                if X is not Y:
+                    S_used = c["info"][(s, j)][1]
+                    res_ok, _ = resolvable(residual(nX, sg.p, nY, oY, G.basis(nY)), S_used)
+                    if res_ok:
+                        n_wrong_res += 1
+                        if (s, j) in c["pose_pairs"]:
+                            pose_wrong_res += 1
+                    else:
+                        n_wrong_unres += 1
+                        unres_planes.update([seg_truth[s], pt])
             if pt != seg_truth[s]:
                 key = f"{NAMES[seg_truth[s]]}->{NAMES[pt] if pt is not None else None}({a.state})"
                 confusion[key] = confusion.get(key, 0) + 1
                 if len(wrong_log) < 12:
                     right = [x.id for x in pw.primaries() if a_truth.get(x.id) == seg_truth[s]]
                     wrong_log.append(dict(k=k, seg=NAMES[seg_truth[s]], j=j, j_truth=NAMES[pt] if pt is not None else None,
-                                          gap=c["kt"] - a.est.tau, sdV=np.sqrt(np.diag(a.est.cov_at(c["kt"], pw.Gamma))).round(4).tolist(),
+                                          gap=c["kt"] - a.est.tau, sdV=np.sqrt(np.diag(a.est.V)).round(4).tolist(),
                                           bhat=a.est.b.round(4).tolist(), nis=round(float(c["info"][(s, j)][0]), 2),
                                           right=[(x, dict((jj, ss) for ss, jj in c["assign"]).get(x),
                                                   round(float(c["info"].get((s, x), (np.nan,))[0]), 1)) for x in right],
@@ -328,17 +360,26 @@ def run_case(kind, seed, inject_wrong_at=None, dup_frames=(100, 250), slip=None)
         if a.state == "merged":
             merges.append((a_truth.get(a.primary_id), a_truth.get(a.id)))
     false_merges = sum(1 for x, y in merges if x != y)
+    start_planes = set(a_truth.get(a.id) for a in pw.anchors.values() if a.t_ref <= 100)
+    late_dups = sum(1 for a in pw.primaries() if a.state == "active" and a.t_ref >= 300
+                    and a_truth.get(a.id) in start_planes
+                    and any(b.state == "active" and b.id != a.id and a_truth.get(b.id) == a_truth.get(a.id)
+                            for b in pw.primaries()))
     active = {}
     for a in pw.primaries():
         if a.state == "active":
             active.setdefault(a_truth.get(a.id), []).append(a.id)
-    planes_req = [t for t, n in seen_kf.items() if n >= 3]
+    planes_req = [t for t, n in seen_kf.items() if n >= 3 and t not in unres_planes]
     one_each = all(len(active.get(t, [])) == 1 for t in planes_req)
     return dict(kind=kind, seed=seed, nis_mean=float(np.mean(nis_fresh)) if nis_fresh else None,
                 n_nis=len(nis_fresh), pct_correct=100.0 * n_correct / max(n_assign, 1), n_assign=n_assign,
-                merges=len(merges), false_merges=false_merges, conflicts=pw.counters["conflicts"],
-                revisits=pw.counters["revisits"], gamma=np.diag(pw.Gamma).tolist(), invariants=pw.n_invariant,
+                merges=len(merges), false_merges=false_merges, deferred=pw.counters["deferred"],
+                revisit_candidates=pw.counters["revisit_candidates"], late_dups=late_dups,
+                wrong_resolvable=n_wrong_res, wrong_unresolvable=n_wrong_unres, pose_wrong_resolvable=pose_wrong_res,
+                unres_planes=[NAMES[t] for t in unres_planes],
+                ap4_accuracy=100.0 * n_unres_correct / max(n_unres_total, 1), ap4_n=n_unres_total,
+                invariants=pw.n_invariant,
                 active_per_plane={NAMES[t]: len(active.get(t, [])) for t in planes_req}, one_each=bool(one_each),
                 bias_reject=pw.counters["bias_reject"], bias_accept=pw.counters["bias_accept"], wrong=wrong,
-                violations=pw.violation_msgs[:5], confusion=confusion, wrong_log=wrong_log, slip=slip,
-                bias_reject_region=pw.counters["bias_reject_region"])
+                bias_ambiguous=pw.counters["bias_ambiguous"],
+                violations=pw.violation_msgs[:5], confusion=confusion, wrong_log=wrong_log, slip=slip)

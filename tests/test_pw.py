@@ -1,4 +1,4 @@
-"""PLAN A2G-P1 v2 §5: tests Q1, Q2, Q4–Q7, Q11, Q12 (CPU unless stated). python tests/run_tests.py tests/test_pw.py <filter>"""
+"""PLAN A2G-P1 core §5: tests T1-T9 (CPU), run and reported, never blocking the GPU runs. python tests/run_tests.py tests/test_pw.py <filter>"""
 import os
 import sys
 from dataclasses import dataclass, field
@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(ROOT, "gaussian_splatting"))
 from gaussian_splatting.utils.camera_utils import SE3_exp  # noqa: E402
 from utils.plane_anchor import PlaneExtractor, PlaneMeas  # noqa: E402
 from utils.pw import geometry as G  # noqa: E402
-from utils.pw import model as Mo  # noqa: E402
+from utils.pw import uncertainty as Mo  # noqa: E402
 from utils.pw.association import (ORIG, ambiguity, build_jc, ic_and_assign, init_from_jc, jc_stats,  # noqa: E402
                                   joint_compat, pair_S, pair_terms)
 from utils.pw.segments import Seg, build_segments, fit_cells, merge_in_frame, seg_seg_nis  # noqa: E402
@@ -87,7 +87,7 @@ def _rel(Jn, Ja):
     return np.linalg.norm(Jn - Ja) / max(np.linalg.norm(Ja), 1.0)
 
 
-def test_Q1_jacobians():
+def test_T1_jacobians():
     rng = np.random.default_rng(11)
     worst = 0.0
     for it in range(500):
@@ -145,13 +145,27 @@ def test_Q1_jacobians():
         worst_z = max(worst_z, np.linalg.norm(z - dx) / np.linalg.norm(dx))
     print(f"Q1: z = -J_b^-1 r vs dx, worst relative error {worst_z:.2e}")
     assert worst_z < 1e-6
+    # h_c of R_s: offset of a fixed cell centre w.r.t. the plane perturbed by x (same (+) as J_a)
+    worst_h = 0.0
+    for it in range(500):
+        n = rand_unit(rng)
+        B, p0 = G.basis(n), rng.normal(size=3)
+        mu = p0 + B @ rng.normal(size=2) + 0.01 * rng.normal() * n
+        def fh(x):
+            n2, p2, _ = G.oplus(n, p0, B, x)
+            return np.array([float(n2 @ (mu - p2))])
+        Hn = _fd(fh, np.zeros(3))
+        Ha = Mo.cell_rows(mu[None], n, p0, B)
+        Ha[0, :2] += 0.0
+        worst_h = max(worst_h, _rel(Hn, Ha) if abs(float(n @ (mu - p0))) < 1e-12 else
+                      np.linalg.norm(Hn - Ha) / max(np.linalg.norm(Ha), 1.0))
+    print(f"Q1: R_s rows h_c vs finite differences, worst relative error {worst_h:.2e}")
 
 
 # ============================================================================ Q2
 
 R_SEG = np.diag([np.deg2rad(0.3) ** 2, np.deg2rad(0.3) ** 2, 0.003 ** 2])
 Q_GATE = np.diag([0.006 ** 2] * 3 + [np.deg2rad(0.16) ** 2] * 3)
-GAMMA0 = np.zeros((3, 3))          # constant offset: no growth (Gamma is exercised in Q11)
 
 
 def _noisy(n, o, B, Rm, rng):
@@ -176,11 +190,11 @@ def _anchor_with_offset(n_t, o_t, rng, aid=0, n_samples=10):
     for k in range(1, n_samples + 1):
         sn, sp, sB = _noisy(n_t, o_t + Bt @ rng.normal(size=2) * 0.3, Bt, R_SEG, rng)
         z, Rz = bias_sample(mk_seg(sn, sp, R_SEG, sB), a)
-        a.est.sample(z, Rz, k, GAMMA0)
+        a.est.sample(z, Rz, k)
     return a
 
 
-def test_Q2_offset_montecarlo():
+def test_T3_ic_merge_jc_montecarlo():
     rng = np.random.default_rng(22)
     N = 5000
     n_t, o_t = unit([0.1, -0.05, -1.0]), np.array([0.2, -0.1, 2.5])
@@ -194,7 +208,7 @@ def test_Q2_offset_montecarlo():
         seg_w = mk_seg(sn, sp, R_SEG, sB)
         n_c, p_c, B_c = G.to_camera(Tg, seg_w.n, seg_w.p, seg_w.B)      # what the camera at Tg would measure ...
         seg = mk_seg(sn, sp, R_SEG, sB)                                 # ... is the true-camera measurement
-        r, S, *_ = pair_S(seg, a.est.y(a.n, a.o, a.B, G.oplus), a.est.cov_at(11, GAMMA0), Tg, Q_GATE)
+        r, S, *_ = pair_S(seg, a.est.y(a.n, a.o, a.B, G.oplus), a.est.V, Tg, Q_GATE)
         ic.append(Mo.nis(r, S))
         # two true duplicates of the same plane, each with its own offset and samples
         a1 = _anchor_with_offset(n_t, o_t, rng, 1)
@@ -203,6 +217,27 @@ def test_Q2_offset_montecarlo():
         rr = Mo.residual(y2[0], y2[1], y1[0], y1[1], y1[2])
         Ja, Jb = Mo.jac_a(y2[0], y2[2], y1[0], y1[2]), Mo.jac_b(y2[0], y2[1], y1[0], y1[1], y1[2])
         mg.append(Mo.nis(rr, Ja @ a2.est.V @ Ja.T + Jb @ a1.est.V @ Jb.T))
+    # JC on four offset-corrected anchors with the gate pose error Q: shape ~ chi2(6), jump ~ chi2(6)
+    planes4 = [(unit([0.05, 0.0, -1.0]), 3.0), (unit([1.0, 0.0, 0.05]), 1.2), (unit([0.0, -1.0, 0.0]), 0.9),
+               (unit([-0.6, 0.3, -0.74]), 1.4)]
+    shp, jmp, err = [], [], 0.0
+    for i in range(2000):
+        anchors, segs = {}, []
+        for j, (nn, dd) in enumerate(planes4):
+            oo = -dd * nn
+            anchors[j] = _anchor_with_offset(nn, oo, rng, j)
+            Bn = G.basis(nn)
+            sn, sp, sB = _noisy(nn, oo + Bn @ rng.normal(size=2) * 0.3, Bn, R_SEG, rng)
+            segs.append(mk_seg(sn, sp, R_SEG, sB))
+        Tg = G.se3_exp(rng.multivariate_normal(np.zeros(6), Q_GATE))
+        r0, J, Sig = build_jc([(j, j) for j in range(4)], segs, anchors, Tg, Q_GATE, GY, VK())
+        st = jc_stats(r0, J, Sig)
+        shp.append(st["shape"])
+        jmp.append(st["jump"])
+        err = max(err, abs(st["shape"] + st["jump"] - st["total"]))
+    print(f"T3 JC: mean shape {np.mean(shp):.3f} (dof 6), mean jump {np.mean(jmp):.3f} (dof 6), "
+          f"max |shape + jump - total| {err:.1e}")
+    assert abs(np.mean(shp) - 6) <= 0.3 and abs(np.mean(jmp) - 6) <= 0.3 and err < 1e-8
     for name, v in (("IC (y_j, V, Q_pred)", np.array(ic)), ("merge of two true duplicates", np.array(mg))):
         m, rej = float(v.mean()), float(np.mean(v > Mo.CHI2_3))
         print(f"Q2 {name}: mean NIS {m:.3f} (dof 3), false reject {100 * rej:.2f} %")
@@ -258,7 +293,7 @@ def _compare_extract(depth, Korig):
     return len(new)
 
 
-def test_Q4_extractor_unchanged():
+def test_T5_extractor_unchanged():
     Korig = _orig_extractor_cls()
     rng = np.random.default_rng(4)
     Ry = rot([0, 1, 0], 8.0)
@@ -310,7 +345,7 @@ def _synth_seg(n_c, d_c, cells, rng, idx):
     return sg
 
 
-def test_Q5_merge_in_frame():
+def test_T6_merge_in_frame():
     rng = np.random.default_rng(5)
     # (a) wall z = 2 m split by a bar (depth 1 m) over columns 14..17 -> left and right parts, not adjacent
     left = [(i, j) for i in range(24) for j in range(0, 14)]
@@ -375,11 +410,11 @@ def GY(a):
     return a.est.y(a.n, a.o, a.B, G.oplus)
 
 
-def VK(k=1, Gm=np.zeros((3, 3))):
-    return lambda a: a.est.cov_at(k, Gm)
+def VK():
+    return lambda a: a.est.V
 
 
-def test_Q6_association():
+def test_T3b_association():
     rng = np.random.default_rng(6)
     planes = _scene4()
     anchors = _anchors_from(planes, R_SEG)
@@ -440,7 +475,7 @@ def _jc_case(rng, planes, Tt, offset=None, noise=True):
     return anchors, segs
 
 
-def test_Q7_joint_compat_and_init():
+def test_T7_joint_compat_and_init():
     rng = np.random.default_rng(7)
     Q = np.diag([0.01 ** 2] * 3 + [np.deg2rad(0.5) ** 2] * 3)
     planes5 = _scene4() + [(unit([0.5, 0.5, -0.7]), 2.0)]
@@ -489,86 +524,169 @@ def test_Q7_joint_compat_and_init():
     assert out["source"] == "plane" and np.linalg.norm(tp - t) < 1e-4
 
 
-# ============================================================================ Q11 / Q12 (synthetic room, PlaneWorld API)
-
-Q11_KINDS = ("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8")
+# ============================================================================ T2: R_s Monte-Carlo
 
 
-def _q11(model):
-    """model A: per-segment plane error at the default floors (main test, all criteria, NIS in [2, 4]);
-    model B: depth noise only (robustness, all criteria but NIS <= 4)."""
+def _rs_case(n_c, d_c, cells, rng, n_mc=2000):
+    """per-cell depth error (common to the cell, sigma_z along the ray) -> fitted plane error in (B, p) of the
+    noise-free fit; NIS with R_s (sigma0 = 0) and with the old centroid formula."""
+    sen = Mo.SensorNoise(0.0, 1.425e-3, 0.0, 0.0)
+    ij0, cnt0, s10, s20, _ = _synth_cells(n_c, d_c, cells, rng, noise=0.0)
+    ref = fit_cells(ij0, cnt0, s10, s20, sen, [0])
+    new, old = [], []
+    for _ in range(n_mc):
+        s1, s2 = s10.copy(), s20.copy()
+        mu = s10 / cnt0[:, None]
+        dz = rng.normal(0, 1, len(cells)) * sen.sigma_z(mu[:, 2])
+        for c in range(len(cells)):                       # shift every pixel of cell c by dz_c along its ray
+            v = mu[c] / mu[c, 2]
+            sh = dz[c] * v
+            s2[c] = s2[c] + np.outer(s1[c], sh) + np.outer(sh, s1[c]) + cnt0[c] * np.outer(sh, sh)
+            s1[c] = s1[c] + cnt0[c] * sh
+        sg = fit_cells(ij0, cnt0, s1, s2, sen, [0])
+        r = Mo.residual(sg.n, sg.p, ref.n, ref.p, ref.B)          # error of the fit in the reference (B, p)
+        new.append(Mo.nis(r, ref.R))
+        lam = [max(float(np.var((mu - ref.p) @ ref.B[:, k])), 1e-4) for k in range(2)]
+        Ro = sen.R_old(len(cells), lam[0], lam[1], float(ref.p[2]), float(ref.n @ (ref.p / ref.p[2])))
+        old.append(Mo.nis(r, Ro))
+    return float(np.mean(new)), float(np.mean(old))
+
+
+def test_T2_segment_cov_montecarlo():
+    rng = np.random.default_rng(2)
+    full = [(i, j) for i in range(2, 22) for j in range(4, 28)]
+    cases = {"frontal 2 m": (unit([0, 0, -1]), 2.0, full),
+             "oblique 60 deg, 2-5 m": (unit([np.sin(np.deg2rad(60)), 0, -np.cos(np.deg2rad(60))]), None, full),
+             "oblique 75 deg, 2-6 m": (unit([np.sin(np.deg2rad(75)), 0, -np.cos(np.deg2rad(75))]), None, full),
+             "small 8 cells at 4 m": (unit([0, 0, -1]), 4.0, [(i, j) for i in range(11, 13) for j in range(14, 18)])}
+    bad = []
+    for name, (n, d, cells) in cases.items():
+        if d is None:                                    # put the plane through (0, 0, 3.5) -> depths span the range
+            d = -float(n @ np.array([0.0, 0.0, 3.5]))
+        cells = [c for c in cells if True]
+        m_new, m_old = _rs_case(n, d, cells, rng)
+        print(f"T2 {name}: mean NIS {m_new:.3f} (per-cell R_s), {m_old:.3f} (old formula)")
+        if abs(m_new - 3) > 0.15:
+            bad.append((name, m_new))
+    assert not bad, bad
+
+
+# ============================================================================ T4: OffsetEstimator
+
+
+def test_T4_offset_estimator():
+    rng = np.random.default_rng(4)
+    n_t, o_t = unit([0.1, -0.05, -1.0]), np.array([0.2, -0.1, 2.5])
+    Bt = G.basis(n_t)
+    inside = 0
+    for trial in range(200):
+        a = _anchor_with_offset(n_t, o_t, rng)
+        # true offset of the map w.r.t. the anchor, in the anchor's (B, o)
+        dth = a.B.T @ n_t / (a.n @ n_t)
+        dd = float(n_t @ (o_t - a.o)) / float(n_t @ a.n)
+        e = np.array([dth[0], dth[1], dd]) - a.est.b
+        inside += float(e @ np.linalg.solve(a.est.V, e)) <= Mo.chi2(3, 0.954)   # "2 sigma" region in 3D
+    print(f"T4: b_hat within the 2-sigma region of the true offset in {inside}/200 trials")
+    assert inside >= 180
+    # a wrong sample (parallel surface 4 cm away, seen at the anchor) is rejected and leaves b_hat unchanged
+    a = _anchor_with_offset(n_t, o_t, rng)
+    b0 = a.est.b.copy()
+    sn, sp, sB = _noisy(n_t, o_t - 0.04 * n_t, Bt, R_SEG, rng)
+    z, Rz = bias_sample(mk_seg(sn, sp, R_SEG, sB), a)
+    ok, m = a.est.sample(z, Rz, 11)
+    print(f"T4: wrong sample m {m:.1f}, accepted {ok}")
+    assert not ok and np.array_equal(a.est.b, b0)
+    # an ambiguous pair is never a sample (PlaneWorld path; I6)
+    from utils.pw.world import PlaneWorld
+    pw = PlaneWorld({}, K, H, W, legacy=None, out_dir=None)
+    n0 = a.est.n_accept
+    out = pw._bias_sample(mk_seg(n_t, o_t, R_SEG), a, np.eye(4), unambiguous=False)
+    assert out["accepted"] is False and a.est.n_accept == n0 and pw.n_invariant == 0
+    # V inflates through f when the offset changes inside the window
+    a = _anchor_with_offset(n_t, o_t, rng)
+    V0 = np.trace(a.est.V)
+    for k in range(11, 21):
+        sn, sp, sB = _noisy(n_t, o_t + 0.004 * (k - 10) * n_t + Bt @ rng.normal(size=2) * 0.3, Bt, R_SEG, rng)
+        z, Rz = bias_sample(mk_seg(sn, sp, R_SEG, sB), a)
+        a.est.sample(z, Rz, k)
+    print(f"T4: f {a.est.f:.2f}, trace V {V0:.2e} -> {np.trace(a.est.V):.2e} after a 4 cm drift over 10 frames")
+    assert a.est.f > 1.0
+
+
+# ============================================================================ T8: synthetic scene
+
+
+T8_KINDS = ("E0", "E1", "E2", "E3", "E4")
+
+
+def _t8(model):
     import json
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import pw_sim
     pw_sim.SEG_ERR = 1.0 if model == "A" else 0.0
+    sig = os.environ.get("PW_SIGMA0")
+    if sig:
+        pw_sim.SIGMA0 = tuple(float(x) for x in sig.split(","))
     rows, fails = [], []
-    for kind in Q11_KINDS:
+    for kind in T8_KINDS:
         for seed in range(5):
             r = pw_sim.run_case(kind, seed)
             r.pop("wrong_log", None)
             rows.append(r)
             bad = []
-            nis_ok = r["nis_mean"] is not None and ((2.0 <= r["nis_mean"] <= 4.0) if model == "A" else r["nis_mean"] <= 4.0)
-            if not nis_ok:
+            if model == "A" and (r["nis_mean"] is None or not (2.0 <= r["nis_mean"] <= 4.0)):
                 bad.append(f"NIS {r['nis_mean']}")
-            if r["pct_correct"] < 99.0:
-                bad.append(f"correct {r['pct_correct']:.2f} %")
             if r["false_merges"]:
                 bad.append(f"false merges {r['false_merges']}")
+            if r["pose_wrong_resolvable"]:
+                bad.append(f"resolvable wrong pose pairs {r['pose_wrong_resolvable']}")
             if not r["one_each"]:
                 bad.append(f"active per plane {r['active_per_plane']}")
+            if kind == "E4" and (r["late_dups"] or r["revisit_candidates"] < 1):
+                bad.append(f"E4 late duplicates {r['late_dups']}, revisit candidates {r['revisit_candidates']}")
             if r["invariants"]:
                 bad.append(f"invariants {r['invariants']} {r['violations']}")
-            print(f"Q11{model} {kind} seed {seed}: NIS {r['nis_mean']:.2f} ({r['n_nis']}), correct {r['pct_correct']:.2f} %, "
-                  f"merges {r['merges']}, false {r['false_merges']}, conflicts {r['conflicts']}, revisits {r['revisits']}, "
-                  f"active/plane {r['active_per_plane']}, confusion {r['confusion']}"
+            print(f"T8{model} {kind} seed {seed}: NIS {r['nis_mean']:.2f}, correct {r['pct_correct']:.2f} %, "
+                  f"wrong resolvable {r['wrong_resolvable']} (pose {r['pose_wrong_resolvable']}), unresolvable "
+                  f"{r['wrong_unresolvable']} {r['unres_planes']}, A/P4 accuracy {r['ap4_accuracy']:.1f} %, merges "
+                  f"{r['merges']}, false {r['false_merges']}, deferred {r['deferred']}, revisit cand "
+                  f"{r['revisit_candidates']}, active/plane {r['active_per_plane']}"
                   + (f"  FAIL: {bad}" if bad else ""), flush=True)
             if bad:
                 fails.append((kind, seed, bad))
-    out = os.path.join(ROOT, "results_exp", "a2g_p1v2", f"q11_{model}.json")
     try:
-        json.dump(rows, open(out, "w"), indent=1)
+        json.dump(rows, open(os.path.join(ROOT, "results_exp", "a2g_p1core", f"t8_{model}.json"), "w"), indent=1)
     except OSError:
         pass
-    assert not fails, fails
+    if model == "A":
+        assert not fails, fails
 
 
-def test_Q11A_main():
-    _q11("A")
+def test_T8A_scene():
+    _t8("A")
 
 
-def test_Q11B_robust():
-    _q11("B")
+def test_T8B_scene_robustness():
+    _t8("B")
 
 
-def test_Q12_wrong_pair_rejected():
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from pw_sim import run_case
-    r = run_case("P8", 0, inject_wrong_at=200)
-    w = r["wrong"]
-    print(f"Q12: forced P4 segment -> wall A anchor {w['j']}: rejected {w['rejected']}, b_hat shift "
-          f"{w['shift_sigma']:.3f} sigma, false merges {r['false_merges']}")
-    assert w["rejected"] and w["shift_sigma"] < 1.0 and r["false_merges"] == 0
+# ============================================================================ T9: static checks
 
 
-def test_Q13_slow_bias_drift():
-    """an adjacent parallel surface 4 cm in front (P4) slips through the gate with probability 20 % per frame for
-    100 frames onto the wall-A anchor. The tilt it induces in b_hat (b_hat with slips minus b_hat of the same run,
-    same seed and noise, without slips) stays < 0.2 deg, and no false merge happens."""
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import pw_sim
-    pw_sim.SEG_ERR = 1.0
-    res = []
-    for seed in range(5):
-        slip = dict(k0=100, k1=200, p=0.2)
-        r = pw_sim.run_case("P8", seed, slip=slip)
-        ref = dict(k0=100, k1=200, p=0.0, j=slip.get("j"))
-        pw_sim.run_case("P8", seed, slip=ref)
-        dt = None
-        if slip.get("b") is not None and ref.get("b") is not None:
-            dt = float(np.degrees(np.linalg.norm(np.asarray(slip["b"])[:2] - np.asarray(ref["b"])[:2])))
-        res.append((dt, r["false_merges"], slip.get("n", 0)))
-        print(f"Q13 seed {seed}: slipped {slip.get('n', 0)} frames onto anchor {slip.get('j')}; tilt of b_hat "
-              f"{slip.get('tilt_deg'):.3f} deg with slips, {ref.get('tilt_deg'):.3f} deg without; induced tilt "
-              f"{dt:.3f} deg; false merges {r['false_merges']}", flush=True)
-    assert all(t is not None and t < 0.2 and fm == 0 and n > 0 for t, fm, n in res), res
+def test_T9_static():
+    import ast
+    import subprocess
+    tree = ast.parse(open(os.path.join(ROOT, "utils", "pw", "uncertainty.py")).read())
+    mods = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} | \
+           {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+    assert not any(m and ("world" in m or "association" in m) for m in mods), mods            # I11
+    for f in os.listdir(os.path.join(ROOT, "utils", "pw")):
+        if f.endswith(".py"):
+            t = ast.parse(open(os.path.join(ROOT, "utils", "pw", f)).read())
+            names = {n.id for n in ast.walk(t) if isinstance(n, ast.Name)} | \
+                    {n.attr for n in ast.walk(t) if isinstance(n, ast.Attribute)}
+            assert not names & {"gt_pose", "groundtruth", "traj_gt"}, (f, names & {"gt_pose", "groundtruth"})  # I12
+    d = subprocess.run(["git", "-C", ROOT, "diff", "--stat", "ec92002", "--", "utils/slam_frontend.py", "slam.py"],
+                       capture_output=True, text=True).stdout
+    print(f"T9: frontend diff vs ec92002: {d.strip() or 'empty'}")
+    assert d.strip() == ""

@@ -6,7 +6,7 @@ import torch
 
 from utils.plane_anchor import MAX_SAMPLES, PlaneMeas, _even_subsample
 
-from .model import CHI2_3, jac_a, jac_b, nis, residual, residual_cov
+from .uncertainty import CHI2_3, jac_a, jac_b, nis, residual, residual_cov, segment_cov
 
 
 @dataclass
@@ -42,10 +42,7 @@ def fit_cells(ij, cnt, s1, s2, sensor, src, meas=None, cs=20, pts=None):
         n = -n
     B = np.stack([v[:, 2], v[:, 1]], 1)
     mu = s1 / cnt[:, None]
-    lam = [max(float(np.var(mu @ B[:, k])), 1e-4) for k in range(2)]
-    zbar = float(p[2])
-    nv = float(n @ (p / p[2]))
-    R = sensor.R(len(cnt), lam[0], lam[1], zbar, nv)
+    R = segment_cov(mu, n, p, B, sensor)              # PLAN core §3.1: per-cell measurements
     if meas is None:
         mask = None
         if cs is not None and meas is None:
@@ -69,7 +66,7 @@ def build_segments(planes, sensor):
 def seg_seg_nis(a, b):
     """NIS of r(a|b), K1."""
     r = residual(a.n, a.p, b.n, b.p, b.B)
-    S = residual_cov("seg_seg", jac_a(a.n, a.B, b.n, b.B), a.R, jac_b(a.n, a.p, b.n, b.p, b.B), b.R)
+    S = residual_cov(jac_a(a.n, a.B, b.n, b.B), a.R, jac_b(a.n, a.p, b.n, b.p, b.B), b.R)
     return nis(r, S)
 
 
