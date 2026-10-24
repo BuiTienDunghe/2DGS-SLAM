@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 from . import geometry as G
-from .association import ORIG, ambiguity, build_jc, ic_and_assign, init_from_jc, jc_stats, pair_terms
+from .association import ORIG, ambiguity, build_jc, ic_and_assign, init_from_jc, jc_stats, pair_terms, seg_grid_idx
 from .model import (CHI2_2, CHI2_3, OffsetEstimator, PredNoise, SensorNoise, ang_nis, chi2, jac_a, jac_b, nis,
                     residual)
 from .segments import build_segments, merge_in_frame
@@ -111,8 +111,7 @@ class PlaneWorld:
         g0 = cfg.get("gamma0", {}) or {}
         th = np.deg2rad(float(g0.get("theta_deg", 0.15)))
         self.Gamma0 = np.array([th ** 2, th ** 2, float(g0.get("d_m", 0.005)) ** 2])
-        self.gamma_sum = self.Gamma0.copy()          # prior counted as one sample
-        self.gamma_n = 1
+        self.gamma_samples = [self.Gamma0.copy()]    # P1-v2.1: prior = one sample; component-wise median
         self.gamma_min_gap = int(cfg.get("gamma_min_gap", 5))
         self.h = float(cfg.get("grid_h", 0.05))
         self.L = int(cfg.get("L_kf", 10))
@@ -135,7 +134,8 @@ class PlaneWorld:
         self.violation_msgs = []
         self.skip_merge_once = False                 # test hook (Q11 duplicate injection)
         self.counters = dict(merges=0, conflicts=0, revisits=0, cand_deleted=0, jc_jump=0, jc_shape_drop=0,
-                             rank6=0, frames=0, plane_init=0, bias_accept=0, bias_reject=0, gamma_samples=0)
+                             rank6=0, frames=0, plane_init=0, bias_accept=0, bias_reject=0, bias_reject_region=0,
+                             gamma_samples=0)
         self.ms_pw = []
         self.f_frames = self.f_kf = self.f_ev = None
         self.out_dir = out_dir
@@ -148,10 +148,9 @@ class PlaneWorld:
     # ------------------------------------------------------------------ helpers
     @property
     def Gamma(self):
-        """Running mean of the (unclipped) per-sample estimates, prior Gamma0 counted as one sample, clipped at 0.
-        PLAN v2 §3.4 clips every sample at 0 before averaging; that biases Gamma upwards (E[max(0, x)] > 0 for
-        zero-mean noise) - see the report."""
-        return np.diag(np.clip(self.gamma_sum / self.gamma_n, 0, None))
+        """P1-v2.1: component-wise median of the unclipped samples (prior Gamma0 counted as one sample), clipped
+        at 0. PLAN v2 clipped every sample before averaging, which is biased upwards."""
+        return np.diag(np.clip(np.median(np.stack(self.gamma_samples), 0), 0, None))
 
     def primaries(self):
         return [a for a in self.anchors.values() if a.state != "merged"]
@@ -264,7 +263,7 @@ class PlaneWorld:
         Q = self.pred.Q()
         prim = self.primaries()
         Vk = self.Vk_fn(self.kt)
-        cand, assign, info = ic_and_assign(segs, prim, Tg, self.geom_y, Vk, Q)
+        cand, assign, info = ic_and_assign(segs, prim, Tg, self.geom_y, Vk, Q, h=self.h)       # P1-v2.1
         t1 = time.perf_counter()
         ambig = ambiguity(segs, assign, prim, Tg, self.geom_y, Vk, self.h, Q)
         pose = [(s, j) for s, j in assign if self.anchors[j].state == "active"]
@@ -282,7 +281,7 @@ class PlaneWorld:
             free_a = {a.id for a in prim if a.id not in used_a}
             if free_s and free_a:
                 c2, a2, info2 = ic_and_assign(segs, prim, T_init, self.geom_y, Vk, res["Ip"], restrict_s=free_s,
-                                              restrict_a=free_a)
+                                              restrict_a=free_a, h=self.h)                            # P1-v2.1
                 if a2:
                     new_pose = [(s, j) for s, j in a2 if self.anchors[j].state == "active"]
                     ok = True
@@ -346,6 +345,10 @@ class PlaneWorld:
 
     # ------------------------------------------------------------------ after tracking: Q_pred, b_hat samples
     def _bias_sample(self, seg, a, T, k):
+        # P1-v2.1: a sample needs spatial evidence (segment overlaps/touches the support region of the anchor)
+        if not G.overlap_or_adjacent(seg_grid_idx(seg, T, a, self.h), a.cells):
+            self.counters["bias_reject_region"] += 1
+            return dict(z=None, accepted=False, m=None, fresh=bool((k - a.est.tau) < self.Wb), region=False)
         r, Ja, Jb, _ = pair_terms(seg, ORIG(a), T)
         Jbi = np.linalg.inv(Jb)
         z = -Jbi @ r
@@ -356,14 +359,13 @@ class PlaneWorld:
         if ok:
             self.counters["bias_accept"] += 1
             if gamma_obs is not None:
-                self.gamma_sum += gamma_obs
-                self.gamma_n += 1
+                self.gamma_samples.append(gamma_obs)
                 self.counters["gamma_samples"] += 1
         else:
             self.counters["bias_reject"] += 1
         if np.min(np.linalg.eigvalsh(a.est.V)) <= 0:
             self._violation("I8", f"V of {a.id} not positive definite")
-        return dict(z=z, accepted=bool(ok), m=m, fresh=bool(fresh))
+        return dict(z=z, accepted=bool(ok), m=m, fresh=bool(fresh), region=True)
 
     def after_tracking(self, k, T_opt):
         c = self.cur
@@ -404,9 +406,14 @@ class PlaneWorld:
         prim = self.primaries()
         kt = self.kt
         Vk = self.Vk_fn(kt)
-        cand, assign, info = ic_and_assign(segs, prim, T, self.geom_y, Vk, None)
+        cand, assign, info = ic_and_assign(segs, prim, T, self.geom_y, Vk, None, h=self.h)     # P1-v2.1
         ambig = ambiguity(segs, assign, prim, T, self.geom_y, Vk, self.h, None)
-        kf = dict(k=int(k), kt=kt, reassign=[dict(s=s, j=j, nis=info[(s, j)][0],
+        def _parts(s, j):                                       # angle (2 dof) and distance (1 dof) parts of the NIS
+            _, S_, r_ = info[(s, j)]
+            return float(r_[:2] @ np.linalg.solve(S_[:2, :2], r_[:2])), float(r_[2] ** 2 / S_[2, 2])
+
+        kf = dict(k=int(k), kt=kt, reassign=[dict(s=s, j=j, nis=info[(s, j)][0], nis_ang=_parts(s, j)[0],
+                                           nis_d=_parts(s, j)[1],
                                            fresh=bool((kt - self.anchors[j].est.tau) < self.Wb)) for s, j in assign],
                   ambig=ambig, created=[], transitions=[], merges=[])
         for s, j in assign:                                    # support region only (geometry fixed)
@@ -511,6 +518,8 @@ class PlaneWorld:
         kf["Gamma"] = np.diag(self.Gamma)
         kf["bias_reject"] = self.counters["bias_reject"]
         kf["bias_accept"] = self.counters["bias_accept"]
+        kf["bias_reject_region"] = self.counters["bias_reject_region"]
+        kf["gamma_n"] = len(self.gamma_samples)
         self._write_kf(kf)
         self.ghash_kf = self.ghash()
 
@@ -524,11 +533,13 @@ class PlaneWorld:
         z = -Jbi @ r
         gap = max(1, self.kt - js.est.tau)
         gam = np.diag(np.outer(z, z) - js.est.V - c.P) / gap
-        self.gamma_sum += gam
-        self.gamma_n += 1
         self.counters["revisits"] += 1
-        self.counters["gamma_samples"] += 1
-        self._event(dict(type="revisit", k=int(k), c=c.id, jstar=js.id, r=r, z=z, gap=gap, gamma=gam))
+        touch = self._regions_touch(js, c)                      # P1-v2.1: Gamma sample only with spatial evidence
+        if touch:
+            self.gamma_samples.append(gam)
+            self.counters["gamma_samples"] += 1
+        self._event(dict(type="revisit", k=int(k), c=c.id, jstar=js.id, r=r, z=z, gap=gap, gamma=gam,
+                         gamma_used=bool(touch)))
 
     def _aa(self, a, b):
         """r(y_a | y_b) in the world with S = J_a V_a J_a^T + J_b V_b J_b^T (no pose term, no Gamma)."""
@@ -545,6 +556,13 @@ class PlaneWorld:
         X = G.grid_centres(b.cells, b.grid_o, b.grid_B, self.h)
         return G.overlap_or_adjacent(G.grid_index(X, a.grid_o, a.grid_B, self.h), a.cells)
 
+    def _common_cells(self, a, b):
+        """P1-v2.1: number of cells of b that land on a cell of a after projection into the grid of a."""
+        if not a.cells or not b.cells:
+            return 0
+        X = G.grid_centres(b.cells, b.grid_o, b.grid_B, self.h)
+        return sum(1 for x in G.grid_index(X, a.grid_o, a.grid_B, self.h).tolist() if tuple(x) in a.cells)
+
     def _best_merge(self, k):
         prim = [a for a in self.primaries() if a.state != "conflict" and a.est.tau >= k - self.Wb]
         best = None
@@ -554,7 +572,7 @@ class PlaneWorld:
                 if self._diff(aj.id, ak.id) >= self.m_diff:
                     continue
                 r1, S1 = self._aa(ak, aj)
-                if ang_nis(r1, S1) > CHI2_2 or not self._regions_touch(aj, ak):
+                if ang_nis(r1, S1) > CHI2_2 or self._common_cells(aj, ak) < 1:          # P1-v2.1 overlap
                     continue
                 r2, S2 = self._aa(aj, ak)
                 v1, v2 = nis(r1, S1), nis(r2, S2)
@@ -566,6 +584,8 @@ class PlaneWorld:
         aj, ak = self.anchors[jid], self.anchors[kid]
         if self._diff(jid, kid) >= self.m_diff or "conflict" in (aj.state, ak.state):
             self._violation("I7", f"merge of {jid},{kid} in E or conflict")
+        if self._common_cells(aj, ak) < 1:
+            self._violation("I16", f"merge of {jid},{kid} without common cells")
         if min(aj.est.tau, ak.est.tau) < kt - self.Wb:
             self._violation("I14", f"merge of {jid},{kid} without fresh data")
         if (aj.t_ref, -aj.matched_kf) <= (ak.t_ref, -ak.matched_kf):
@@ -573,7 +593,7 @@ class PlaneWorld:
         else:
             keep, drop = ak, aj
         yk, yd = self.geom_y(keep), self.geom_y(drop)
-        ev = dict(type="merge", k=int(k), kt=int(kt), keep=keep.id, drop=drop.id, nis=[extra[2], extra[3]], r=extra[0], S=extra[1],
+        ev = dict(type="merge", k=int(k), kt=int(kt), common_cells=self._common_cells(aj, ak), keep=keep.id, drop=drop.id, nis=[extra[2], extra[3]], r=extra[0], S=extra[1],
                   tau=[keep.est.tau, drop.est.tau], bhat=[keep.est.b, drop.est.b], V=[keep.est.V, drop.est.V],
                   keep_par=dict(n=keep.n, o=keep.o, state=keep.state, n_cells=len(keep.cells), t_ref=keep.t_ref),
                   drop_par=dict(n=drop.n, o=drop.o, state=drop.state, n_cells=len(drop.cells), t_ref=drop.t_ref),

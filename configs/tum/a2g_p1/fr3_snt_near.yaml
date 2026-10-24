@@ -1,0 +1,21 @@
+inherit_from: "configs/tum/a2g_p1/p1_common.yaml"
+
+# calibration sequence for sigma_0 (PLAN v2.1 C); never used to test
+Dataset:
+  sequence_name: "fr3_snt_near"
+  dataset_path: "datasets/tum/rgbd_dataset_freiburg3_structure_notexture_near"
+  Calibration:
+    fx: 535.4
+    fy: 539.2
+    cx: 320.1
+    cy: 247.6
+    k1: 0.0
+    k2: 0.0
+    p1: 0.0
+    p2: 0.0
+    k3: 0.0
+    distorted: False
+    width: 640
+    height: 480
+    depth_scale: 5000.0
+    depth_noise_scale: 0.005

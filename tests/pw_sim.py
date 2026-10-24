@@ -120,7 +120,18 @@ def measure(T_true, rng, split=None):
     """PlaneMeas list (with cells) seen from the true pose; split = plane name to cut into two segments."""
     centres, sub = cell_rays()
     Hc, Wc = H // CS, W // CS
-    pid, _ = raycast(T_true, centres)
+    # P1-v2.1 per-ray occlusion: every one of the 16 sub-rays of a cell is cast to the NEAREST surface; a cell
+    # belongs to the surface hit by most of its rays and keeps only the rays that hit it (>= 14 of 16, like
+    # CAPE's 90 % valid-pixel rule). No point of a wall is generated where a panel hides it.
+    pid_sub, _ = raycast(T_true, sub.reshape(-1, 3))
+    pid_sub = pid_sub.reshape(len(sub), 16)
+    pid = np.full(len(sub), -1)
+    for ci in range(len(sub)):
+        v = pid_sub[ci][pid_sub[ci] >= 0]
+        if len(v) >= 14:
+            vals, cn = np.unique(v, return_counts=True)
+            if cn.max() >= 14:
+                pid[ci] = vals[np.argmax(cn)]
     out, truth = [], []
     for i, r in enumerate(SCENE):
         cells = np.nonzero(pid == i)[0]
@@ -154,10 +165,13 @@ def measure(T_true, rng, split=None):
             zc = z.mean(1, keepdims=True)
             z = z + rng.normal(0, 1, (len(g), 1)) * sz(zc) + rng.normal(0, 1, z.shape) * sz(z)
             X = rays * z[..., None]
+            keep = (pid_sub[g] == i).astype(float)              # only rays that really hit this surface
             ij = np.stack([g // Wc, g % Wc], 1)
-            cnt = np.full(len(g), 16.0)
-            s1 = X.sum(1)
-            s2 = np.einsum("gni,gnj->gij", X, X)
+            cnt = keep.sum(1)
+            Xk = X * keep[..., None]
+            s1 = Xk.sum(1)
+            s2 = np.einsum("gni,gnj->gij", Xk, X)
+            X = X[keep.astype(bool)][None]
             mask = torch.zeros(Hc, Wc, dtype=torch.bool)
             mask.view(-1)[torch.as_tensor(g)] = True
             S1, S2 = s1.sum(0), s2.sum(0)
@@ -165,7 +179,7 @@ def measure(T_true, rng, split=None):
             w, V = np.linalg.eigh(S2 / cnt.sum() - np.outer(p, p))
             nn = V[:, 0] if V[:, 0] @ p < 0 else -V[:, 0]
             pm = PlaneMeas(n=torch.from_numpy(nn.copy()), d=-float(nn @ p), mask_cells=mask, n_px=int(cnt.sum() * 25),
-                           mse=float(max(w[0], 0)), pts_c=X.reshape(-1, 3)[::max(1, X.size // 1500)][:500])
+                           mse=float(max(w[0], 0)), pts_c=X.reshape(-1, 3)[::max(1, X.reshape(-1, 3).shape[0] // 500)][:500])
             pm.cells = dict(ij=ij, cnt=cnt, s1=s1, s2=s2)
             out.append(pm)
             truth.append(i)
@@ -209,7 +223,7 @@ def drift(kind, t, s, yaw, rng_state):
     return e
 
 
-def run_case(kind, seed, inject_wrong_at=None, dup_frames=(100, 250)):
+def run_case(kind, seed, inject_wrong_at=None, dup_frames=(100, 250), slip=None):
     rng = np.random.default_rng(1000 * seed + sum(map(ord, kind)))
     st = dict(rng=np.random.default_rng(seed + 77))
     cs, yaws = trajectory()
@@ -283,7 +297,22 @@ def run_case(kind, seed, inject_wrong_at=None, dup_frames=(100, 250)):
                 b0, V0 = a.est.b.copy(), a.est.V.copy()
                 c["assign"] = [(s, jj) for s, jj in c["assign"] if jj != j and s != ip[0]] + [(ip[0], j)]
                 wrong = dict(j=j, b0=b0, V0=V0, n_rej0=a.est.n_reject)
+        if slip is not None and slip["k0"] <= k < slip["k1"] and st["rng"].random() < slip["p"]:
+            ia = [s for s, t in enumerate(seg_truth) if NAMES[t] == "A"]
+            ip = [s for s, t in enumerate(seg_truth) if NAMES[t] == "P4"]
+            target = slip.get("j")
+            if target is None:
+                wa = [j for s, j in c["assign"] if s in ia]
+                target = wa[0] if wa else None
+                if target is not None:
+                    slip["j"] = target
+            if ip and target is not None and target in pw.anchors:
+                c["assign"] = [(s, jj) for s, jj in c["assign"] if jj != target and s != ip[0]] + [(ip[0], target)]
+                slip["n"] = slip.get("n", 0) + 1
         pw.after_tracking(k, tt(Topt[k]))
+        if slip is not None and k == slip["k1"] - 1 and slip.get("j") in pw.anchors:
+            slip["tilt_deg"] = float(np.degrees(np.linalg.norm(pw.anchors[slip["j"]].est.b[:2])))
+            slip["b"] = pw.anchors[slip["j"]].est.b.tolist()
         if wrong is not None and "done" not in wrong:
             a = pw.anchors[wrong["j"]]
             wrong.update(done=True, rejected=a.est.n_reject > wrong["n_rej0"],
@@ -311,4 +340,5 @@ def run_case(kind, seed, inject_wrong_at=None, dup_frames=(100, 250)):
                 revisits=pw.counters["revisits"], gamma=np.diag(pw.Gamma).tolist(), invariants=pw.n_invariant,
                 active_per_plane={NAMES[t]: len(active.get(t, [])) for t in planes_req}, one_each=bool(one_each),
                 bias_reject=pw.counters["bias_reject"], bias_accept=pw.counters["bias_accept"], wrong=wrong,
-                violations=pw.violation_msgs[:5], confusion=confusion, wrong_log=wrong_log)
+                violations=pw.violation_msgs[:5], confusion=confusion, wrong_log=wrong_log, slip=slip,
+                bias_reject_region=pw.counters["bias_reject_region"])

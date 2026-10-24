@@ -35,7 +35,7 @@ def pair_S(seg, g, V, T, Q=None):
     return r, 0.5 * (S + S.T), Ja, Jb, Jx
 
 
-def ic_and_assign(segs, anchors, T, geom, Vk, Q=None, restrict_s=None, restrict_a=None):
+def ic_and_assign(segs, anchors, T, geom, Vk, Q=None, restrict_s=None, restrict_a=None, h=None):
     """IC of every (segment, facing primary anchor), conflict rule, Hungarian (max #pairs, then NIS + ln det S).
     Returns (cand, assign, info) with info[(s, aid)] = (nis, S, r)."""
     S_idx = list(range(len(segs))) if restrict_s is None else list(restrict_s)
@@ -68,6 +68,20 @@ def ic_and_assign(segs, anchors, T, geom, Vk, Q=None, restrict_s=None, restrict_
         if a.state == "conflict" and a.conflict_with is not None and jstar_passes(c["s"], a.conflict_with):
             c["ic"] = False
             c["blocked"] = True
+    # P1-v2.1 region first: if some IC-passing anchor has a support region overlapping/touching the segment cells
+    # (projected with the pose in use), only those anchors stay candidates for that segment
+    if h is not None:
+        for si in S_idx:
+            ok_c = [c for c in cand if c["s"] == si and c["ic"]]
+            touch = [c for c in ok_c if overlap_or_adjacent(seg_grid_idx(segs[si], T, by_id[c["j"]], h),
+                                                            by_id[c["j"]].cells)]
+            for c in ok_c:
+                c["region"] = c in touch
+            if touch:
+                for c in ok_c:
+                    if c not in touch:
+                        c["ic"] = False
+                        c["region_dropped"] = True
     assign = []
     if S_idx and A_list:
         M = np.full((len(S_idx), len(A_list)), NO_PASS)

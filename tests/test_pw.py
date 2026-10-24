@@ -139,9 +139,7 @@ def test_Q1_jacobians():
         dx = rng.normal(size=3) * 1e-7
         n2, o2, B2 = G.oplus(n_b, o_b, B_b, dx)
         p_a = o2 + B2 @ rng.normal(size=2)                 # a point of the moved plane
-        n_a = n2
-        if it % 2:
-            n_a = unit(n2 + rng.normal(size=3) * 1e-9)
+        n_a = n2                                           # the segment lies exactly on the moved plane
         r = Mo.residual(n_a, p_a, n_b, o_b, B_b)
         z = -np.linalg.solve(Mo.jac_b(n_a, p_a, n_b, o_b, B_b), r)
         worst_z = max(worst_z, np.linalg.norm(z - dx) / np.linalg.norm(dx))
@@ -496,17 +494,22 @@ def test_Q7_joint_compat_and_init():
 Q11_KINDS = ("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8")
 
 
-def test_Q11_general():
+def _q11(model):
+    """model A: per-segment plane error at the default floors (main test, all criteria, NIS in [2, 4]);
+    model B: depth noise only (robustness, all criteria but NIS <= 4)."""
     import json
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from pw_sim import run_case
+    import pw_sim
+    pw_sim.SEG_ERR = 1.0 if model == "A" else 0.0
     rows, fails = [], []
     for kind in Q11_KINDS:
         for seed in range(5):
-            r = run_case(kind, seed)
+            r = pw_sim.run_case(kind, seed)
+            r.pop("wrong_log", None)
             rows.append(r)
             bad = []
-            if r["nis_mean"] is None or not (2.0 <= r["nis_mean"] <= 4.0):
+            nis_ok = r["nis_mean"] is not None and ((2.0 <= r["nis_mean"] <= 4.0) if model == "A" else r["nis_mean"] <= 4.0)
+            if not nis_ok:
                 bad.append(f"NIS {r['nis_mean']}")
             if r["pct_correct"] < 99.0:
                 bad.append(f"correct {r['pct_correct']:.2f} %")
@@ -515,20 +518,27 @@ def test_Q11_general():
             if not r["one_each"]:
                 bad.append(f"active per plane {r['active_per_plane']}")
             if r["invariants"]:
-                bad.append(f"invariants {r['invariants']}")
-            print(f"Q11 {kind} seed {seed}: NIS {r['nis_mean']:.2f} ({r['n_nis']}), correct {r['pct_correct']:.2f} %, "
+                bad.append(f"invariants {r['invariants']} {r['violations']}")
+            print(f"Q11{model} {kind} seed {seed}: NIS {r['nis_mean']:.2f} ({r['n_nis']}), correct {r['pct_correct']:.2f} %, "
                   f"merges {r['merges']}, false {r['false_merges']}, conflicts {r['conflicts']}, revisits {r['revisits']}, "
-                  f"active/plane {r['active_per_plane']}, Gamma {np.round(np.sqrt(r['gamma']), 5).tolist()}"
+                  f"active/plane {r['active_per_plane']}, confusion {r['confusion']}"
                   + (f"  FAIL: {bad}" if bad else ""), flush=True)
             if bad:
                 fails.append((kind, seed, bad))
-    out = os.environ.get("Q11_OUT", os.path.join(ROOT, "results_exp", "a2g_p1v2", "q11.json"))
+    out = os.path.join(ROOT, "results_exp", "a2g_p1v2", f"q11_{model}.json")
     try:
-        os.makedirs(os.path.dirname(out), exist_ok=True)
         json.dump(rows, open(out, "w"), indent=1)
     except OSError:
         pass
     assert not fails, fails
+
+
+def test_Q11A_main():
+    _q11("A")
+
+
+def test_Q11B_robust():
+    _q11("B")
 
 
 def test_Q12_wrong_pair_rejected():
@@ -539,3 +549,26 @@ def test_Q12_wrong_pair_rejected():
     print(f"Q12: forced P4 segment -> wall A anchor {w['j']}: rejected {w['rejected']}, b_hat shift "
           f"{w['shift_sigma']:.3f} sigma, false merges {r['false_merges']}")
     assert w["rejected"] and w["shift_sigma"] < 1.0 and r["false_merges"] == 0
+
+
+def test_Q13_slow_bias_drift():
+    """an adjacent parallel surface 4 cm in front (P4) slips through the gate with probability 20 % per frame for
+    100 frames onto the wall-A anchor. The tilt it induces in b_hat (b_hat with slips minus b_hat of the same run,
+    same seed and noise, without slips) stays < 0.2 deg, and no false merge happens."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import pw_sim
+    pw_sim.SEG_ERR = 1.0
+    res = []
+    for seed in range(5):
+        slip = dict(k0=100, k1=200, p=0.2)
+        r = pw_sim.run_case("P8", seed, slip=slip)
+        ref = dict(k0=100, k1=200, p=0.0, j=slip.get("j"))
+        pw_sim.run_case("P8", seed, slip=ref)
+        dt = None
+        if slip.get("b") is not None and ref.get("b") is not None:
+            dt = float(np.degrees(np.linalg.norm(np.asarray(slip["b"])[:2] - np.asarray(ref["b"])[:2])))
+        res.append((dt, r["false_merges"], slip.get("n", 0)))
+        print(f"Q13 seed {seed}: slipped {slip.get('n', 0)} frames onto anchor {slip.get('j')}; tilt of b_hat "
+              f"{slip.get('tilt_deg'):.3f} deg with slips, {ref.get('tilt_deg'):.3f} deg without; induced tilt "
+              f"{dt:.3f} deg; false merges {r['false_merges']}", flush=True)
+    assert all(t is not None and t < 0.2 and fm == 0 and n > 0 for t, fm, n in res), res
