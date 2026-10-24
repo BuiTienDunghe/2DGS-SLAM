@@ -1,4 +1,4 @@
-"""PLAN A2G-P1 (rút gọn) §5: tests Q1–Q7 (CPU unless stated). python tests/run_tests.py tests/test_pw.py <filter>"""
+"""PLAN A2G-P1 v2 §5: tests Q1, Q2, Q4–Q7, Q11, Q12 (CPU unless stated). python tests/run_tests.py tests/test_pw.py <filter>"""
 import os
 import sys
 from dataclasses import dataclass, field
@@ -16,8 +16,8 @@ from gaussian_splatting.utils.camera_utils import SE3_exp  # noqa: E402
 from utils.plane_anchor import PlaneExtractor, PlaneMeas  # noqa: E402
 from utils.pw import geometry as G  # noqa: E402
 from utils.pw import model as Mo  # noqa: E402
-from utils.pw.association import (ambiguity, build_jc, ic_and_assign, init_from_jc, jc_stats,  # noqa: E402
-                                  joint_compat, pair_S)
+from utils.pw.association import (ORIG, ambiguity, build_jc, ic_and_assign, init_from_jc, jc_stats,  # noqa: E402
+                                  joint_compat, pair_S, pair_terms)
 from utils.pw.segments import Seg, build_segments, fit_cells, merge_in_frame, seg_seg_nis  # noqa: E402
 
 H, W = 480, 640
@@ -54,8 +54,7 @@ class A:                                 # minimal anchor (same attribute names 
     grid_o: np.ndarray = None
     grid_B: np.ndarray = None
     cells: set = field(default_factory=set)
-    s_ref: float = 0.0
-    phi_ref: float = 0.0
+    est: object = None
 
 
 def mk_seg(n, p, R, B=None, mu=None):
@@ -132,232 +131,85 @@ def test_Q1_jacobians():
         assert np.allclose(G.se3_log(G.se3_exp(xi)), xi, atol=1e-9)
     print(f"Q1: worst relative error {worst:.2e}")
     assert worst < 1e-6
-    # EKF direction (audit example): anchor z = 0, segment centre (1, 0, 0.01), same normal
-    n = np.array([0.0, 0.0, 1.0])
-    B = G.basis(n)
-    o = np.zeros(3)
-    p = np.array([1.0, 0.0, 0.01])
-    r = Mo.residual(n, p, n, o, B)
-    Hm = -Mo.jac_b(n, p, n, o, B)
-    P = np.diag([1e-2, 1e-2, 1e-8])
-    N = np.diag([1.0, 1.0, 1e-8])
-    S = Hm @ P @ Hm.T + N
-    Kg = P @ Hm.T @ np.linalg.inv(S)
-    dx = Kg @ r
-    n2, o2, _ = G.oplus(n, o, B, dx)
-    z_at_1 = (-(n2[0] * 1.0) + float(n2 @ o2)) / n2[2]        # plane n.(x - o) = 0 at x = 1, y = 0
-    print(f"Q1: EKF plane height at x = 1 m: {z_at_1 * 100:+.3f} cm")
-    assert abs(z_at_1 - 0.01) < 1e-4
+    # z = -J_b^-1 r: if the map plane is the anchor moved by dx, the apparent offset z equals dx (first order)
+    worst_z = 0.0
+    for it in range(500):
+        n_b = rand_unit(rng)
+        B_b, o_b = G.basis(n_b), rng.normal(size=3)
+        dx = rng.normal(size=3) * 1e-7
+        n2, o2, B2 = G.oplus(n_b, o_b, B_b, dx)
+        p_a = o2 + B2 @ rng.normal(size=2)                 # a point of the moved plane
+        n_a = n2
+        if it % 2:
+            n_a = unit(n2 + rng.normal(size=3) * 1e-9)
+        r = Mo.residual(n_a, p_a, n_b, o_b, B_b)
+        z = -np.linalg.solve(Mo.jac_b(n_a, p_a, n_b, o_b, B_b), r)
+        worst_z = max(worst_z, np.linalg.norm(z - dx) / np.linalg.norm(dx))
+    print(f"Q1: z = -J_b^-1 r vs dx, worst relative error {worst_z:.2e}")
+    assert worst_z < 1e-6
 
 
 # ============================================================================ Q2
 
 R_SEG = np.diag([np.deg2rad(0.3) ** 2, np.deg2rad(0.3) ** 2, 0.003 ** 2])
-
-
-def _q2_setup(form):
-    v, w = 0.01, np.deg2rad(0.5)                      # path per frame: 1 cm, 0.5 deg
-    if form == "linear":
-        dm = Mo.DriftModel("linear", 0.1, 0.1)
-    else:
-        dm = Mo.DriftModel("rw", np.sqrt(1e-6 / v), np.sqrt(np.deg2rad(0.05) ** 2 / w))
-    s = lambda t: v * t
-    ph = lambda t: w * t
-    Q = np.diag([0.006 ** 2] * 3 + [np.deg2rad(0.16) ** 2] * 3)
-    return dm, s, ph, Q
-
-
-def _sample_e(dm, s, ph, times, rng, n):
-    m = len(times)
-    C = np.zeros((6 * m, 6 * m))
-    for i, a in enumerate(times):
-        for j, b in enumerate(times):
-            C[6 * i:6 * i + 6, 6 * j:6 * j + 6] = dm.cov_e(s(a), ph(a), s(b), ph(b))
-    w, V = np.linalg.eigh(0.5 * (C + C.T))
-    L = V * np.sqrt(np.clip(w, 0, None))
-    return (rng.normal(size=(n, 6 * m)) @ L.T).reshape(n, m, 6)
-
-
-def _scene(rng):
-    T = np.eye(4)
-    planes = []
-    for n, d in ((unit([0.1, 0.0, -1.0]), 2.5), (unit([1.0, 0.05, 0.0]), 1.2), (unit([0.0, -1.0, 0.1]), 0.9),
-                 (unit([-0.6, 0.3, -0.74]), 1.5)):
-        o = -d * n
-        planes.append((n, o + G.basis(n) @ rng.normal(size=2) * 0.3))
-    return T, planes
+Q_GATE = np.diag([0.006 ** 2] * 3 + [np.deg2rad(0.16) ** 2] * 3)
+GAMMA0 = np.zeros((3, 3))          # constant offset: no growth (Gamma is exercised in Q11)
 
 
 def _noisy(n, o, B, Rm, rng):
     return G.oplus(n, o, B, rng.multivariate_normal(np.zeros(3), Rm))
 
 
-def _ks(v, dof):
-    return kstest(v, sp_chi2(dof).cdf).pvalue
+def bias_sample(seg, a, T=np.eye(4)):
+    """same formula as PlaneWorld._bias_sample: z = -J_b^-1 r(s | original anchor), R_z = J_b^-1 J_a R J_a^T J_b^-T"""
+    r, Ja, Jb, _ = pair_terms(seg, ORIG(a), T)
+    Jbi = np.linalg.inv(Jb)
+    Rz = Jbi @ (Ja @ seg.R @ Ja.T) @ Jbi.T
+    return -Jbi @ r, 0.5 * (Rz + Rz.T)
 
 
-def test_Q2_covariance_montecarlo():
+def _anchor_with_offset(n_t, o_t, rng, aid=0, n_samples=10):
+    """anchor = true plane (+) a constant random offset b ~ N(0, P_j) (the prior of the offset estimator: V = P_j at
+    creation); b_hat from n_samples segments of the true plane (camera = world). Returns the anchor (est filled)."""
+    Bt = G.basis(n_t)
+    an, ao, aB = _noisy(n_t, o_t, Bt, R_SEG, rng)
+    a = A(aid, an, ao, aB, R_SEG.copy())
+    a.est = Mo.OffsetEstimator(a.P, 0, 30)
+    for k in range(1, n_samples + 1):
+        sn, sp, sB = _noisy(n_t, o_t + Bt @ rng.normal(size=2) * 0.3, Bt, R_SEG, rng)
+        z, Rz = bias_sample(mk_seg(sn, sp, R_SEG, sB), a)
+        a.est.sample(z, Rz, k, GAMMA0)
+    return a
+
+
+def test_Q2_offset_montecarlo():
     rng = np.random.default_rng(22)
     N = 5000
-    for form in ("linear",):
-        dm, s, ph, Q = _q2_setup(form)
-        _, planes = _scene(rng)
-        t_anchor = [0, 50, 100, 150]
-        k = 200
-        E = _sample_e(dm, s, ph, t_anchor + [k], rng, N)          # (N, 5, 6)
-        Wq = rng.multivariate_normal(np.zeros(6), Q, size=N)
-        res = {}
-        # K1: two segments of plane 0 in the same frame
-        n0, o0 = planes[0]
-        B0 = G.basis(n0)
-        v1 = []
-        for i in range(N):
-            na, pa, Ba = _noisy(n0, o0 + B0 @ [0.2, 0.1], B0, R_SEG, rng)
-            nb, pb, Bb = _noisy(n0, o0 - B0 @ [0.2, 0.1], B0, R_SEG, rng)
-            a, b = mk_seg(na, pa, R_SEG, Ba), mk_seg(nb, pb, R_SEG, Bb)
-            v1.append(seg_seg_nis(a, b))
-        res["K1"] = (np.array(v1), 3)
-        # K2 / K3: anchor of plane j created at t_j; current frame k at T_pred = Exp(eps + w) T
-        for kind in ("K2", "K3"):
-            vals = []
-            for i in range(N):
-                j = i % 4
-                n_true, o_true = planes[j]
-                Bt = G.basis(n_true)
-                an, ao, aB = _noisy(n_true, o_true, Bt, R_SEG, rng)          # P_j = R_SEG
-                eps = E[i, 4] - E[i, j]
-                xi = eps + (Wq[i] if kind == "K2" else 0)
-                Tp = G.se3_exp(xi)
-                sn, sp, sB = _noisy(n_true, o_true + Bt @ [0.1, -0.1], Bt, R_SEG, rng)
-                seg = mk_seg(sn, sp, R_SEG, sB)
-                anc = A(0, an, ao, aB, R_SEG)
-                D = dm.C(s(t_anchor[j]), ph(t_anchor[j]), s(k), ph(k))
-                X = Q + D if kind == "K2" else D
-                r, S, *_ = pair_S(seg, anc, Tp, X, "seg_anchor_pred" if kind == "K2" else "seg_anchor_opt")
-                vals.append(Mo.nis(r, S))
-            vals = np.array(vals)
-            res[kind] = (np.concatenate([vals[j::4] for j in (1, 2, 3)]), 3)
-            print(f"Q2 {form} {kind}: mean NIS by anchor time t=0/50/100/150: "
-                  + " ".join(f"{np.mean(vals[j::4]):.3f}" for j in range(4))
-                  + "  (t=0: 20 cm / 10 deg of drift, linearisation regime, reported only)")
-        # K4: four anchors, one pose; shape ~ chi2(3n - 6), jump ~ chi2(6)
-        shapes, jumps, errs, rej, catch = [], [], [], 0, 0
-        n4 = 5000
-        t4 = [150, 160, 170, 180]           # <= 50 frames (2.5 deg) of drift; plan setup reported below
-        E4 = _sample_e(dm, s, ph, t4 + [k], rng, n4)
-        for i in range(n4):
-            anchors, segs = {}, []
-            for j in range(4):
-                n_true, o_true = planes[j]
-                Bt = G.basis(n_true)
-                an, ao, aB = _noisy(n_true, o_true, Bt, R_SEG, rng)
-                # bake eps_j = e(k) - e(t_j) into the anchor: anchor_w = Exp(eps_j)^-1 applied to the true plane
-                Te = G.inv_T(G.se3_exp(E4[i, 4] - E4[i, j]))
-                an, ao, aB = G.to_camera(Te, an, ao, aB)
-                anchors[j] = A(j, an, ao, aB, R_SEG, s_ref=s(t4[j]), phi_ref=ph(t4[j]))
-                sn, sp, sB = _noisy(n_true, o_true + Bt @ [0.1, -0.1], Bt, R_SEG, rng)
-                segs.append(mk_seg(sn, sp, R_SEG, sB))
-            Tp = G.inv_T(G.se3_exp(Wq[i]))
-            pairs = [(j, j) for j in range(4)]
-            ce = lambda ai, al: dm.cov_eps(s(k), ph(k), anchors[ai].s_ref, anchors[ai].phi_ref,
-                                           anchors[al].s_ref, anchors[al].phi_ref)
-            r0, J, Sig = build_jc(pairs, segs, anchors, Tp, Q, ce)
-            st = jc_stats(r0, J, Sig)
-            shapes.append(st["shape"])
-            jumps.append(st["jump"])
-            errs.append(abs(st["shape"] + st["jump"] - st["total"]))
-            rej += st["shape"] > Mo.chi2(3 * 4 - 6)
-            # one wrong pair: segment 0 moved 10 cm along its normal
-            bad = list(segs)
-            b0 = bad[0]
-            bad[0] = mk_seg(b0.n, b0.p - 0.10 * b0.n, R_SEG, b0.B)
-            r0, J, Sig = build_jc(pairs, bad, anchors, Tp, Q, ce)
-            catch += jc_stats(r0, J, Sig)["shape"] > Mo.chi2(6)
-        res["K4_shape"] = (np.array(shapes), 6)
-        res["K4_jump"] = (np.array(jumps), 6)
-        # K5: two anchors of plane 0 created at t_j = 50 and t_k = 150, compared in the camera of T_ref,k
-        v5 = []
-        tj, tk = 50, 150
-        Ej = _sample_e(dm, s, ph, [tj, tk], rng, N)
-        for i in range(N):
-            n_true, o_true = planes[0]
-            Bt = G.basis(n_true)
-            kn, ko, kB = _noisy(n_true, o_true + Bt @ [0.2, 0.0], Bt, R_SEG, rng)
-            jn, jo, jB = _noisy(n_true, o_true, Bt, R_SEG, rng)
-            Te = G.se3_exp(Ej[i, 1] - Ej[i, 0])
-            jn, jo, jB = G.to_camera(Te, jn, jo, jB)
-            r = Mo.residual(kn, ko, jn, jo, jB)
-            S = Mo.residual_cov("anchor_anchor", Mo.jac_a(kn, kB, jn, jB), R_SEG, Mo.jac_b(kn, ko, jn, jo, jB), R_SEG,
-                                Mo.jac_xi(kn, ko, jn, jB), dm.C(s(tj), ph(tj), s(tk), ph(tk)))
-            v5.append(Mo.nis(r, S))
-        res["K5"] = (np.array(v5), 3)
-        for name, (v, dof) in res.items():
-            m, p = float(v.mean()), _ks(v, dof)
-            print(f"Q2 {form} {name}: mean NIS {m:.3f} (dof {dof}), KS p {p:.3f}")
-            assert abs(m - dof) <= 0.05 * dof, (form, name, m)
-        # catch rate with fresh anchors (t = 195..198, drift <= 5 mm): what JC can do when drift does not mask it
-        catch_f = 0
-        tf = [195, 196, 197, 198]
-        Ef = _sample_e(dm, s, ph, tf + [k], rng, 2000)
-        for i in range(2000):
-            anchors, segs = {}, []
-            for j in range(4):
-                n_true, o_true = planes[j]
-                Bt = G.basis(n_true)
-                an, ao, aB = _noisy(n_true, o_true, Bt, R_SEG, rng)
-                an, ao, aB = G.to_camera(G.inv_T(G.se3_exp(Ef[i, 4] - Ef[i, j])), an, ao, aB)
-                anchors[j] = A(j, an, ao, aB, R_SEG, s_ref=s(tf[j]), phi_ref=ph(tf[j]))
-                sn, sp, sB = _noisy(n_true, o_true + Bt @ [0.1, -0.1], Bt, R_SEG, rng)
-                segs.append(mk_seg(sn, sp, R_SEG, sB))
-            segs[0] = mk_seg(segs[0].n, segs[0].p - 0.10 * segs[0].n, R_SEG, segs[0].B)
-            Tp = G.inv_T(G.se3_exp(rng.multivariate_normal(np.zeros(6), Q)))
-            ce = lambda ai, al: dm.cov_eps(s(k), ph(k), anchors[ai].s_ref, anchors[ai].phi_ref,
-                                           anchors[al].s_ref, anchors[al].phi_ref)
-            r0, J, Sig = build_jc([(j, j) for j in range(4)], segs, anchors, Tp, Q, ce)
-            catch_f += jc_stats(r0, J, Sig)["shape"] > Mo.chi2(6)
-        print(f"Q2 {form} K4: max |shape + jump - total| {max(errs):.1e}, false reject {rej / n4:.4f}, "
-              f"catch 10 cm: anchors t=150..180 {catch / n4:.3f} (reported), fresh anchors {catch_f / 2000:.3f}")
-        catch = catch_f * n4 / 2000
-        assert max(errs) < 1e-9 * max(1.0, max(shapes))
-        assert abs(rej / n4 - 0.01) <= 0.005
-        assert catch / n4 >= 0.80
-        # K5 decision does not depend on the current frame k
-        Ck = [dm.C(s(tj), ph(tj), s(tk), ph(tk)) for _ in (200, 400)]
-        assert np.array_equal(Ck[0], Ck[1])
-
-
-# ============================================================================ Q3
-
-
-def test_Q3_drift_frame_rate():
-    dm = Mo.DriftModel("linear", 0.03, 0.02)
-    dmr = Mo.DriftModel("rw", 0.01, 0.01)
-    v, w = np.array([0.3, 0.0, 0.1]), np.array([0.0, 0.2, 0.05])      # m/s, rad/s
-    out = {}
-    for hz in (30, 15):
-        ts = np.arange(0, 10 + 1e-9, 1 / hz)
-        Ts = []
-        for t in ts:
-            Rt = G.so3_exp(w * t)
-            Tt = np.eye(4)
-            Tt[:3, :3], Tt[:3, 3] = Rt, -Rt @ (v * t)          # camera centre on a straight line
-            Ts.append(Tt)
-        s = np.concatenate([[0], np.cumsum([np.linalg.norm(G.centre(Ts[i + 1]) - G.centre(Ts[i])) for i in range(len(ts) - 1)])])
-        ph = np.concatenate([[0], np.cumsum([G.rot_angle(Ts[i + 1][:3, :3] @ Ts[i][:3, :3].T) for i in range(len(ts) - 1)])])
-        ia, ib = int(round(2 * hz)), int(round(8 * hz))
-        out[hz] = [m.C(s[ia], ph[ia], s[ib], ph[ib]) for m in (dm, dmr)]
-    for hz in (15,):
-        for a, b in zip(out[30], out[hz]):
-            assert np.abs(a - b).max() < 1e-9, (hz, np.abs(a - b).max())
-    # closed form of Cov(eps_i, eps_l)
-    sk, si, sl, pk, pi_, pl = 5.0, 1.0, 3.0, 2.0, 0.5, 1.5
-    lin = dm.cov_eps(sk, pk, si, pi_, sl, pl)
-    assert np.allclose(np.diag(lin)[:3], 0.03 ** 2 * (sk - si) * (sk - sl), atol=1e-15)
-    assert np.allclose(np.diag(lin)[3:], 0.02 ** 2 * (pk - pi_) * (pk - pl), atol=1e-15)
-    rw = dmr.cov_eps(sk, pk, si, pi_, sl, pl)
-    assert np.allclose(np.diag(rw)[:3], 0.01 ** 2 * (sk - max(si, sl)), atol=1e-15)
-    print("Q3: C(t_a, t_b) frame-rate independent; Cov(eps_i, eps_l) closed forms match")
-
+    n_t, o_t = unit([0.1, -0.05, -1.0]), np.array([0.2, -0.1, 2.5])
+    Bt = G.basis(n_t)
+    ic, mg = [], []
+    for i in range(N):
+        a = _anchor_with_offset(n_t, o_t, rng)
+        Tg = G.se3_exp(rng.multivariate_normal(np.zeros(6), Q_GATE))
+        # a new segment of the true plane seen from the true camera (identity); the gate pose carries the error
+        sn, sp, sB = _noisy(n_t, o_t + Bt @ rng.normal(size=2) * 0.3, Bt, R_SEG, rng)
+        seg_w = mk_seg(sn, sp, R_SEG, sB)
+        n_c, p_c, B_c = G.to_camera(Tg, seg_w.n, seg_w.p, seg_w.B)      # what the camera at Tg would measure ...
+        seg = mk_seg(sn, sp, R_SEG, sB)                                 # ... is the true-camera measurement
+        r, S, *_ = pair_S(seg, a.est.y(a.n, a.o, a.B, G.oplus), a.est.cov_at(11, GAMMA0), Tg, Q_GATE)
+        ic.append(Mo.nis(r, S))
+        # two true duplicates of the same plane, each with its own offset and samples
+        a1 = _anchor_with_offset(n_t, o_t, rng, 1)
+        a2 = _anchor_with_offset(n_t, o_t, rng, 2)
+        y1, y2 = a1.est.y(a1.n, a1.o, a1.B, G.oplus), a2.est.y(a2.n, a2.o, a2.B, G.oplus)
+        rr = Mo.residual(y2[0], y2[1], y1[0], y1[1], y1[2])
+        Ja, Jb = Mo.jac_a(y2[0], y2[2], y1[0], y1[2]), Mo.jac_b(y2[0], y2[1], y1[0], y1[1], y1[2])
+        mg.append(Mo.nis(rr, Ja @ a2.est.V @ Ja.T + Jb @ a1.est.V @ Jb.T))
+    for name, v in (("IC (y_j, V, Q_pred)", np.array(ic)), ("merge of two true duplicates", np.array(mg))):
+        m, rej = float(v.mean()), float(np.mean(v > Mo.CHI2_3))
+        print(f"Q2 {name}: mean NIS {m:.3f} (dof 3), false reject {100 * rej:.2f} %")
+        assert abs(m - 3) <= 0.15, (name, m)
+        assert abs(rej - 0.01) <= 0.005, (name, rej)
 
 # ============================================================================ Q4
 
@@ -515,19 +367,27 @@ def _anchors_from(planes, P, ids=None):
     for j, (n, d) in enumerate(planes):
         o = -d * n
         Bn = G.basis(n)
-        out.append(A(j if ids is None else ids[j], n, o, Bn, P.copy(), grid_o=o, grid_B=Bn))
+        a = A(j if ids is None else ids[j], n, o, Bn, P.copy(), grid_o=o, grid_B=Bn)
+        a.est = Mo.OffsetEstimator(a.P, 0, 30)
+        out.append(a)
     return out
+
+
+def GY(a):
+    return a.est.y(a.n, a.o, a.B, G.oplus)
+
+
+def VK(k=1, Gm=np.zeros((3, 3))):
+    return lambda a: a.est.cov_at(k, Gm)
 
 
 def test_Q6_association():
     rng = np.random.default_rng(6)
-    Q = np.diag([0.006 ** 2] * 3 + [np.deg2rad(0.16) ** 2] * 3)
     planes = _scene4()
     anchors = _anchors_from(planes, R_SEG)
     ok = 0
     for trial in range(300):
-        Tt = np.eye(4)
-        Tp = G.se3_exp(rng.multivariate_normal(np.zeros(6), Q))
+        Tp = G.se3_exp(rng.multivariate_normal(np.zeros(6), Q_GATE))
         segs = []
         perm = rng.permutation(4)
         for j in perm:
@@ -535,44 +395,41 @@ def test_Q6_association():
             o = -d * n + G.basis(n) @ rng.normal(size=2) * 0.2
             sn, sp, sB = _noisy(n, o, G.basis(n), R_SEG, rng)
             segs.append(mk_seg(sn, sp, R_SEG, sB))
-        _, assign, _ = ic_and_assign(segs, anchors, Tp, lambda a: Q)
+        _, assign, _ = ic_and_assign(segs, anchors, Tp, GY, VK(), Q_GATE)
         ok += sorted(assign) == sorted((i, int(perm[i])) for i in range(4))
     print(f"Q6a: correct assignment {ok}/300")
     assert ok >= 297
-    # (b) j with huge D (sigma 10 cm), k small S; segment of plane K, 4 cm in front of j
+    # (b) j and k (parallel, k 4 cm in front of j) both with a measured offset of 4 cm (common map shift);
+    #     the segment of K seen where K now is -> assigned to k
     n = np.array([0.0, 0.0, -1.0])
     aj = A(0, n, -2.0 * n, G.basis(n), R_SEG)
     ak = A(1, n, -1.96 * n, G.basis(n), R_SEG)
-    seg = mk_seg(n, -1.96 * n + np.array([0.1, 0.0, 0.0]), R_SEG)
-    Xbig = np.diag([0.1 ** 2] * 3 + [1e-6] * 3)
-    Xs = np.diag([1e-6] * 3 + [1e-6] * 3)
-    cand, assign, info = ic_and_assign([seg], [aj, ak], np.eye(4), lambda a: Xbig if a.id == 0 else Xs)
-    print(f"Q6b: NIS j {info[(0, 0)][0]:.2f}, NIS k {info[(0, 1)][0]:.2f}, assign {assign}")
-    assert info[(0, 0)][0] < info[(0, 1)][0] + 1.0 or True
+    for a in (aj, ak):
+        a.est = Mo.OffsetEstimator(R_SEG / 10, 0, 30)
+        a.est.b = np.array([0.0, 0.0, 0.04])
+    seg = mk_seg(n, -1.92 * n + np.array([0.1, 0.0, 0.0]), R_SEG)
+    cand, assign, info = ic_and_assign([seg], [aj, ak], np.eye(4), GY, VK(), Q_GATE)
+    print(f"Q6b: NIS j {info[(0, 0)][0]:.1f}, NIS k {info[(0, 1)][0]:.2f}, assign {assign}")
     assert assign == [(0, 1)]
     # (c) back-facing anchor never a candidate
-    back = A(5, -n, -2.0 * n, G.basis(-n), R_SEG)
-    cand, assign, _ = ic_and_assign([mk_seg(n, -2.0 * n, R_SEG)], [back], np.eye(4), lambda a: Xs)
+    back = _anchors_from([(-n, -2.0)], R_SEG, ids=[5])[0]
+    cand, assign, _ = ic_and_assign([mk_seg(n, -2.0 * n, R_SEG)], [back], np.eye(4), GY, VK(), Q_GATE)
     assert not cand and not assign
     # (d) conflict(j) never gets a segment that j passes IC
-    j = A(0, n, -2.0 * n, G.basis(n), R_SEG)
-    c = A(1, n, -2.0 * n, G.basis(n), R_SEG, state="conflict", conflict_with=0)
+    j = _anchors_from([(n, 2.0)], R_SEG, ids=[0])[0]
+    c = _anchors_from([(n, 2.0)], R_SEG, ids=[1])[0]
+    c.state, c.conflict_with = "conflict", 0
     s2 = [mk_seg(n, -2.0 * n, R_SEG)]
-    _, assign, _ = ic_and_assign(s2, [c, j], np.eye(4), lambda a: Xs)
+    _, assign, _ = ic_and_assign(s2, [c, j], np.eye(4), GY, VK(), Q_GATE)
     assert assign == [(0, 0)]
-    _, assign, _ = ic_and_assign(s2, [c], np.eye(4), lambda a: Xs, )
-    assert assign == [] or assign == [(0, 1)]
-    _, assign, _ = ic_and_assign(s2, [c, A(0, n, -2.0 * n, G.basis(n), R_SEG, state="candidate")], np.eye(4),
-                                 lambda a: Xs)
-    assert (0, 1) not in assign
-    print("Q6: Hungarian with ln det S, back-facing and conflict rules OK")
+    print("Q6: Hungarian with ln det S on offset-corrected anchors, back-facing and conflict rules OK")
 
 
 # ============================================================================ Q7
 
 
 def _jc_case(rng, planes, Tt, offset=None, noise=True):
-    anchors = {j: a for j, a in enumerate(_anchors_from(planes, R_SEG))}
+    anchors = {a.id: a for a in _anchors_from(planes, R_SEG)}
     segs = []
     for j, (n, d) in enumerate(planes):
         o = -d * n + G.basis(n) @ rng.normal(size=2) * 0.2
@@ -588,36 +445,97 @@ def _jc_case(rng, planes, Tt, offset=None, noise=True):
 def test_Q7_joint_compat_and_init():
     rng = np.random.default_rng(7)
     Q = np.diag([0.01 ** 2] * 3 + [np.deg2rad(0.5) ** 2] * 3)
-    zero = lambda a, b: np.zeros((6, 6))
     planes5 = _scene4() + [(unit([0.5, 0.5, -0.7]), 2.0)]
+    pairs = [(j, j) for j in range(5)]
     # (a) one pair wrong by 15 cm
     anchors, segs = _jc_case(rng, planes5, np.eye(4), offset={2: 0.15})
-    pairs = [(j, j) for j in range(5)]
-    kept, st, dropped = joint_compat(pairs, segs, anchors, np.eye(4), Q, zero)
+    kept, st, dropped = joint_compat(pairs, segs, anchors, np.eye(4), Q, GY, VK())
     print(f"Q7a: dropped {dropped}")
     assert dropped == [(2, 2)] and len(kept) == 4
-    # (b) coherent 30 cm aliasing: every segment seen from a camera 30 cm away
+    # (b) coherent 30 cm aliasing
     Tt = G.se3_exp(np.array([0.3, 0.0, 0.0, 0, 0, 0]))
     anchors, segs = _jc_case(rng, planes5, Tt)
-    out = init_from_jc(pairs, segs, anchors, np.eye(4), Q, zero)
-    print(f"Q7b: {out['source']}, jc {out['jc']}")
+    out = init_from_jc(pairs, segs, anchors, np.eye(4), Q, GY, VK())
+    print(f"Q7b: {out['source']}")
     assert out["source"] == "jc_jump" and out["pose_pairs"] == []
     # (c) two planes -> rank < 6
     anchors, segs = _jc_case(rng, planes5[:2], np.eye(4))
-    out = init_from_jc([(0, 0), (1, 1)], segs, anchors, np.eye(4), Q, zero)
+    out = init_from_jc([(0, 0), (1, 1)], segs, anchors, np.eye(4), Q, GY, VK())
     assert out["source"] == "rank_lt6" and len(out["pose_pairs"]) == 2
-    # (d) correct pairs: pose error after init <= 50 % of T_pred's (median over 200 trials)
+    # (d) correct pairs: pose error after init <= 50 % of the gate's (median of 100 trials)
     ratios = []
     for _ in range(100):
-        xi = rng.multivariate_normal(np.zeros(6), Q)
-        Tt = G.se3_exp(xi)
+        Tt = G.se3_exp(rng.multivariate_normal(np.zeros(6), Q))
         anchors, segs = _jc_case(rng, planes5, Tt)
-        out = init_from_jc(pairs, segs, anchors, np.eye(4), Q, zero)
+        out = init_from_jc(pairs, segs, anchors, np.eye(4), Q, GY, VK())
         if out["source"] != "plane":
             continue
         e0 = np.linalg.norm(G.centre(Tt))
-        e1 = np.linalg.norm(G.centre(out["T_init"]) - G.centre(Tt))
-        ratios.append(e1 / max(e0, 1e-9))
+        ratios.append(np.linalg.norm(G.centre(out["T_init"]) - G.centre(Tt)) / max(e0, 1e-9))
     med = float(np.median(ratios))
-    print(f"Q7e: {len(ratios)} plane inits, median error ratio {med:.3f}")
+    print(f"Q7d: {len(ratios)} plane inits, median error ratio {med:.3f}")
     assert len(ratios) >= 90 and med <= 0.5
+    # (e) GN uses the ORIGINAL anchors: every map plane shifted by the same translation t (b_hat measured);
+    #     JC on y_j passes at T_gate = I, and GN pulls the pose to the anchors: T_p translation = t
+    t = np.array([0.03, -0.02, 0.025])
+    anchors, segs = _jc_case(rng, planes5, np.eye(4), noise=False)
+    for (s, j) in pairs:                                # map = anchors shifted by t: segment centre p -> p + t
+        sg = segs[s]
+        segs[s] = mk_seg(sg.n, sg.p + t, R_SEG, sg.B)
+        a = anchors[j]
+        a.est.b = np.array([0.0, 0.0, float(a.n @ t)])
+        a.est.V = R_SEG / 10
+    out = init_from_jc(pairs, segs, anchors, np.eye(4), Q, GY, VK())
+    tp = out["T_init"][:3, 3]
+    print(f"Q7e: source {out['source']}, jump {out['jc']['jump']:.2e}, T_p translation {tp}, map shift {t}")
+    assert out["source"] == "plane" and np.linalg.norm(tp - t) < 1e-4
+
+
+# ============================================================================ Q11 / Q12 (synthetic room, PlaneWorld API)
+
+Q11_KINDS = ("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8")
+
+
+def test_Q11_general():
+    import json
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from pw_sim import run_case
+    rows, fails = [], []
+    for kind in Q11_KINDS:
+        for seed in range(5):
+            r = run_case(kind, seed)
+            rows.append(r)
+            bad = []
+            if r["nis_mean"] is None or not (2.0 <= r["nis_mean"] <= 4.0):
+                bad.append(f"NIS {r['nis_mean']}")
+            if r["pct_correct"] < 99.0:
+                bad.append(f"correct {r['pct_correct']:.2f} %")
+            if r["false_merges"]:
+                bad.append(f"false merges {r['false_merges']}")
+            if not r["one_each"]:
+                bad.append(f"active per plane {r['active_per_plane']}")
+            if r["invariants"]:
+                bad.append(f"invariants {r['invariants']}")
+            print(f"Q11 {kind} seed {seed}: NIS {r['nis_mean']:.2f} ({r['n_nis']}), correct {r['pct_correct']:.2f} %, "
+                  f"merges {r['merges']}, false {r['false_merges']}, conflicts {r['conflicts']}, revisits {r['revisits']}, "
+                  f"active/plane {r['active_per_plane']}, Gamma {np.round(np.sqrt(r['gamma']), 5).tolist()}"
+                  + (f"  FAIL: {bad}" if bad else ""), flush=True)
+            if bad:
+                fails.append((kind, seed, bad))
+    out = os.environ.get("Q11_OUT", os.path.join(ROOT, "results_exp", "a2g_p1v2", "q11.json"))
+    try:
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        json.dump(rows, open(out, "w"), indent=1)
+    except OSError:
+        pass
+    assert not fails, fails
+
+
+def test_Q12_wrong_pair_rejected():
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from pw_sim import run_case
+    r = run_case("P8", 0, inject_wrong_at=200)
+    w = r["wrong"]
+    print(f"Q12: forced P4 segment -> wall A anchor {w['j']}: rejected {w['rejected']}, b_hat shift "
+          f"{w['shift_sigma']:.3f} sigma, false merges {r['false_merges']}")
+    assert w["rejected"] and w["shift_sigma"] < 1.0 and r["false_merges"] == 0

@@ -108,56 +108,81 @@ class SensorNoise:
         return np.diag([s2 / (N_s * lam1) + self.th0 ** 2, s2 / (N_s * lam2) + self.th0 ** 2, s2 / N_s + self.d0 ** 2])
 
 
-class DriftModel:
-    """(b) absolute pose error e(t) in xi = [rho, theta] coordinates; isotropic, path-length driven."""
-
-    def __init__(self, form="linear", kappa_t=0.0, kappa_r=0.0, kappa_t_rw=0.0, kappa_r_rw=0.0):
-        assert form in ("linear", "rw", "mixed")
-        self.form = form
-        self.kt, self.kr = float(kappa_t or 0.0), float(kappa_r or 0.0)
-        self.kt_rw, self.kr_rw = float(kappa_t_rw or 0.0), float(kappa_r_rw or 0.0)
-        if form == "rw":           # rw alone: the rw coefficients are kappa_t, kappa_r
-            self.kt_rw, self.kr_rw, self.kt, self.kr = self.kt, self.kr, 0.0, 0.0
-        elif form == "linear":
-            self.kt_rw = self.kr_rw = 0.0
-
-    @staticmethod
-    def _blk(vt, vr):
-        return np.diag([vt] * 3 + [vr] * 3)
-
-    def C(self, sa, pa, sb, pb):
-        """Cov(e(t_a) - e(t_b))."""
-        ds, dp = abs(sb - sa), abs(pb - pa)
-        return self._blk((self.kt * ds) ** 2 + self.kt_rw ** 2 * ds, (self.kr * dp) ** 2 + self.kr_rw ** 2 * dp)
-
-    def cov_e(self, sa, pa, sb, pb):
-        """Cov(e(t_a), e(t_b))."""
-        return self._blk(self.kt ** 2 * sa * sb + self.kt_rw ** 2 * min(sa, sb),
-                         self.kr ** 2 * pa * pb + self.kr_rw ** 2 * min(pa, pb))
-
-    def cov_eps(self, sk, pk, si, pi_, sl, pl):
-        """Cov(eps_i, eps_l), eps_j = e(k) - e(t_j)."""
-        return (self.cov_e(sk, pk, sk, pk) - self.cov_e(sk, pk, sl, pl) - self.cov_e(si, pi_, sk, pk)
-                + self.cov_e(si, pi_, sl, pl))
-
-
 class PredNoise:
-    """(c) prediction error: Q_pred = diag(s_rho^2 I3, s_theta^2 I3) from the last W xi_k = Log(T_opt T_pred^-1)."""
+    """(c) prediction error of the constant-velocity gate T_gate,k = Exp(xi_{k-1}) T_{k-1} (PLAN v2 §3.3):
+    eps_k = Log(T_opt,k T_gate,k^-1); Q_pred = full 6x6 mean of eps eps^T over the last W frames (+1e-10 I)."""
 
     def __init__(self, window=30, sigma_rho_m=0.01, sigma_theta_deg=0.5):
         self.buf = deque(maxlen=int(window))
-        self.s0 = (float(sigma_rho_m), float(np.deg2rad(sigma_theta_deg)))
+        self.Q0 = np.diag([float(sigma_rho_m) ** 2] * 3 + [float(np.deg2rad(sigma_theta_deg)) ** 2] * 3)
 
-    def push(self, xi):
-        self.buf.append(np.asarray(xi, dtype=np.float64))
-
-    def sigmas(self):
-        if not self.buf:
-            return self.s0
-        X = np.stack(self.buf)
-        return (float(np.sqrt(np.mean(np.sum(X[:, :3] ** 2, 1)) / 3)),
-                float(np.sqrt(np.mean(np.sum(X[:, 3:] ** 2, 1)) / 3)))
+    def push(self, eps):
+        self.buf.append(np.asarray(eps, dtype=np.float64))
 
     def Q(self):
-        sr, st = self.sigmas()
-        return np.diag([sr ** 2] * 3 + [st ** 2] * 3)
+        if not self.buf:
+            return self.Q0.copy()
+        X = np.stack(self.buf)
+        return X.T @ X / len(X) + 1e-10 * np.eye(6)
+
+    def sigmas(self):
+        q = np.diag(self.Q())
+        return float(np.sqrt(q[:3].mean())), float(np.sqrt(q[3:].mean()))
+
+
+class OffsetEstimator:
+    """Measured anchor-map offset b_hat (PLAN v2 §3.2), in the anchor's (B_j, o_j) coordinates.
+    Samples z = -J_b^-1 r (apparent offset of the original anchor w.r.t. the current map/pose, at T_opt) with
+    R_z = J_b^-1 (J_a R_s J_a^T) J_b^-T are accepted when (z - b)^T (R_z + V(k))^-1 (z - b) <= chi2_3,
+    V(k) = V + Gamma (k - tau). b_hat = weighted mean over accepted samples of the last W frames,
+    V = f (sum W_i)^-1 with f = max(1, chi2 / (3 (n - 1))) for n >= 3."""
+
+    def __init__(self, P, k0, window=30):
+        self.b = np.zeros(3)
+        self.V = np.array(P, dtype=np.float64)
+        self.tau = int(k0)
+        self.window = int(window)
+        self.buf = deque()
+        self.f = 1.0
+        self.n_accept = 0
+        self.n_reject = 0
+
+    def cov_at(self, k, Gamma):
+        return self.V + np.asarray(Gamma) * max(0, int(k) - self.tau)
+
+    def test(self, z, Rz, k, Gamma):
+        d = np.asarray(z) - self.b
+        m = float(d @ np.linalg.solve(Rz + self.cov_at(k, Gamma), d))
+        return m, d
+
+    def sample(self, z, Rz, k, Gamma, min_gap=5):
+        """Returns (accepted, mahalanobis, gamma_obs or None)."""
+        m, d = self.test(z, Rz, k, Gamma)
+        if m > CHI2_3:
+            self.n_reject += 1
+            return False, m, None
+        gap = int(k) - self.tau
+        gamma_obs = None
+        if gap >= min_gap:
+            gamma_obs = np.diag(np.outer(d, d) - Rz - self.V) / gap     # unclipped; the running mean is clipped
+        self.buf.append((int(k), np.asarray(z, dtype=np.float64), np.asarray(Rz, dtype=np.float64)))
+        while self.buf and self.buf[0][0] <= int(k) - self.window:
+            self.buf.popleft()
+        Ws = [np.linalg.inv(R) for _, _, R in self.buf]
+        Wsum = sum(Ws)
+        Vm = np.linalg.inv(Wsum)
+        b = Vm @ sum(W @ zz for W, (_, zz, _) in zip(Ws, self.buf))
+        n = len(self.buf)
+        f = 1.0
+        if n >= 3:
+            chi = sum(float((zz - b) @ W @ (zz - b)) for W, (_, zz, _) in zip(Ws, self.buf))
+            f = max(1.0, chi / (3 * (n - 1)))
+        self.b, self.f = b, f
+        self.V = 0.5 * (f * Vm + (f * Vm).T)
+        self.tau = int(k)
+        self.n_accept += 1
+        return True, m, gamma_obs
+
+    def y(self, n, o, B, oplus):
+        """Offset-corrected anchor y_j = x_j (+) b_hat (decisions only)."""
+        return oplus(n, o, B, self.b)
