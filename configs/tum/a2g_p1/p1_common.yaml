@@ -10,8 +10,8 @@ PlaneWorld:
   sensor:                   # PLAN core §3.1: per-cell R_s; floors calibrated once on fr3 snt_near (§6), then locked
     a: 0.0
     b: 1.425e-3
-    sigma_theta0_deg: 0.5
-    sigma_d0_m: 0.005
+    sigma_theta0_deg: 0.116   # LOCKED 2026-10-24: fr3 snt_near 0-120 step 2, branch exp/a2g-p1core @ 0739e8c(+weighted fit); runs r1 (0.5 deg/5 mm: NIS ang 0.44, d 1.85, 8 pairs), r2 (0.235/6.8: 0.49, 0.77, 5), r3 (0.116/6.0: 1.49, 2.39, 5)
+    sigma_d0_m: 0.0060        # LOCKED (see above); weak calibration: 5-8 unambiguous fresh pairs per run
   pred_window: 30           # Q_pred (full 6x6) of the constant-velocity gate
   pred_init: {sigma_rho_m: 0.01, sigma_theta_deg: 0.5}
   offset_window: 30         # W_b: samples of the measured offset b_hat (tracked frames)

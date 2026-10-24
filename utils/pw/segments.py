@@ -30,27 +30,43 @@ class Seg:                          # camera frame
         return -float(self.n @ self.p)
 
 
-def fit_cells(ij, cnt, s1, s2, sensor, src, meas=None, cs=20, pts=None):
-    """Exact refit from the sums of the cells (§3.1)."""
-    N_px = float(cnt.sum())
-    S1, S2 = s1.sum(0), s2.sum(0)
-    p = S1 / N_px
-    cov = S2 / N_px - np.outer(p, p)
-    w, v = np.linalg.eigh(cov)
+def _wfit(mu, w):
+    p = (w[:, None] * mu).sum(0) / w.sum()
+    D = mu - p
+    cov = (w[:, None] * D).T @ D / w.sum()
+    ev, v = np.linalg.eigh(cov)
     n = v[:, 0].copy()
     if float(n @ p) > 0:
         n = -n
-    B = np.stack([v[:, 2], v[:, 1]], 1)
+    return n, p, np.stack([v[:, 2], v[:, 1]], 1), max(float(ev[0]), 0.0)
+
+
+def fit_cells(ij, cnt, s1, s2, sensor, src, meas=None, cs=20, pts=None):
+    """Segment from per-cell statistics (PLAN core §3.1). Each cell centre mu_c is one measurement with
+    sigma_c = sigma_z(mu_c,z) |n^T v_c|; the plane is the weighted fit (weights 1/sigma_c^2) of the cell centres, so
+    that R_s = I^-1 (+ floors) is the covariance of the estimator actually used (T2). Starts from the unweighted
+    pixel fit, then two weighted iterations (sigma_c depends on n)."""
+    N_px = float(cnt.sum())
+    S1, S2 = s1.sum(0), s2.sum(0)
+    p = S1 / N_px
+    ev, v = np.linalg.eigh(S2 / N_px - np.outer(p, p))
+    n = v[:, 0].copy()
+    if float(n @ p) > 0:
+        n = -n
+    mse = max(float(ev[0]), 0.0)
     mu = s1 / cnt[:, None]
-    R = segment_cov(mu, n, p, B, sensor)              # PLAN core §3.1: per-cell measurements
+    if len(mu) >= 3:
+        for _ in range(2):
+            sig = np.maximum(sensor.sigma_z(mu[:, 2]) * np.abs((mu / mu[:, 2:3]) @ n), 1e-9)
+            n, p, B, _ = _wfit(mu, 1.0 / sig ** 2)
+    else:
+        B = np.stack([v[:, 2], v[:, 1]], 1)
+    R = segment_cov(mu, n, p, B, sensor)
     if meas is None:
-        mask = None
-        if cs is not None and meas is None:
-            pass
-        meas = PlaneMeas(n=torch.from_numpy(n.copy()), d=-float(n @ p), mask_cells=None, n_px=int(N_px),
-                         mse=max(float(w[0]), 0.0), pts_c=pts)
+        meas = PlaneMeas(n=torch.from_numpy(n.copy()), d=-float(n @ p), mask_cells=None, n_px=int(N_px), mse=mse,
+                         pts_c=pts)
     return Seg(cells_ij=ij, cnt=cnt, s1=s1, s2=s2, n=n, p=p, B=B, R=R, N_s=int(len(cnt)), src=list(src),
-               meas=meas, mu=mu, mse=max(float(w[0]), 0.0))
+               meas=meas, mu=mu, mse=mse)
 
 
 def build_segments(planes, sensor):
