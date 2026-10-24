@@ -1,0 +1,993 @@
+[
+ {
+  "kind": "E0",
+  "seed": 0,
+  "nis_mean": 2.495351537123729,
+  "n_nis": 1176,
+  "pct_correct": 99.59349593495935,
+  "n_assign": 1230,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 0,
+  "revisit_candidates": 0,
+  "late_dups": 1,
+  "wrong_resolvable": 0,
+  "wrong_unresolvable": 5,
+  "pose_wrong_resolvable": 0,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 98.87640449438203,
+  "ap4_n": 445,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 1,
+   "P15": 1,
+   "B": 1
+  },
+  "one_each": true,
+  "bias_reject": 19,
+  "bias_accept": 1020,
+  "wrong": null,
+  "bias_ambiguous": 191,
+  "violations": [],
+  "confusion": {
+   "P4->A(candidate)": 3,
+   "A->P4(active)": 1,
+   "P4->A(active)": 1
+  },
+  "slip": null
+ },
+ {
+  "kind": "E0",
+  "seed": 1,
+  "nis_mean": 2.5475157851789993,
+  "n_nis": 1218,
+  "pct_correct": 99.7553017944535,
+  "n_assign": 1226,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 1,
+  "revisit_candidates": 1,
+  "late_dups": 0,
+  "wrong_resolvable": 0,
+  "wrong_unresolvable": 3,
+  "pose_wrong_resolvable": 0,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 99.32126696832579,
+  "ap4_n": 442,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 1,
+   "P15": 1,
+   "B": 1
+  },
+  "one_each": true,
+  "bias_reject": 23,
+  "bias_accept": 1168,
+  "wrong": null,
+  "bias_ambiguous": 35,
+  "violations": [],
+  "confusion": {
+   "A->P4(active)": 3
+  },
+  "slip": null
+ },
+ {
+  "kind": "E0",
+  "seed": 2,
+  "nis_mean": 2.5189550246037538,
+  "n_nis": 1156,
+  "pct_correct": 99.9185667752443,
+  "n_assign": 1228,
+  "merges": 2,
+  "false_merges": 0,
+  "deferred": 2,
+  "revisit_candidates": 0,
+  "late_dups": 0,
+  "wrong_resolvable": 0,
+  "wrong_unresolvable": 1,
+  "pose_wrong_resolvable": 0,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 99.77426636568849,
+  "ap4_n": 443,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 1,
+   "P15": 2,
+   "B": 1
+  },
+  "one_each": false,
+  "bias_reject": 22,
+  "bias_accept": 1024,
+  "wrong": null,
+  "bias_ambiguous": 182,
+  "violations": [],
+  "confusion": {
+   "A->P4(active)": 1
+  },
+  "slip": null
+ },
+ {
+  "kind": "E0",
+  "seed": 3,
+  "nis_mean": 2.670307095022974,
+  "n_nis": 1207,
+  "pct_correct": 99.67159277504105,
+  "n_assign": 1218,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 1,
+  "revisit_candidates": 0,
+  "late_dups": 0,
+  "wrong_resolvable": 0,
+  "wrong_unresolvable": 4,
+  "pose_wrong_resolvable": 0,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 99.08256880733946,
+  "ap4_n": 436,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 1,
+   "P15": 1,
+   "B": 1
+  },
+  "one_each": true,
+  "bias_reject": 30,
+  "bias_accept": 1188,
+  "wrong": null,
+  "bias_ambiguous": 0,
+  "violations": [],
+  "confusion": {
+   "A->P4(active)": 4
+  },
+  "slip": null
+ },
+ {
+  "kind": "E0",
+  "seed": 4,
+  "nis_mean": 2.606022453541996,
+  "n_nis": 1209,
+  "pct_correct": 99.91883116883118,
+  "n_assign": 1232,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 1,
+  "revisit_candidates": 0,
+  "late_dups": 0,
+  "wrong_resolvable": 0,
+  "wrong_unresolvable": 1,
+  "pose_wrong_resolvable": 0,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 99.77578475336323,
+  "ap4_n": 446,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 1,
+   "P15": 1,
+   "B": 1
+  },
+  "one_each": true,
+  "bias_reject": 12,
+  "bias_accept": 1172,
+  "wrong": null,
+  "bias_ambiguous": 48,
+  "violations": [],
+  "confusion": {
+   "A->P4(active)": 1
+  },
+  "slip": null
+ },
+ {
+  "kind": "E1",
+  "seed": 0,
+  "nis_mean": 3.0235768314599705,
+  "n_nis": 1087,
+  "pct_correct": 94.98239436619718,
+  "n_assign": 1136,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 11,
+  "revisit_candidates": 4,
+  "late_dups": 3,
+  "wrong_resolvable": 35,
+  "wrong_unresolvable": 22,
+  "pose_wrong_resolvable": 35,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 86.61971830985915,
+  "ap4_n": 426,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 2,
+   "P15": 1,
+   "B": 2
+  },
+  "one_each": false,
+  "bias_reject": 64,
+  "bias_accept": 921,
+  "wrong": null,
+  "bias_ambiguous": 151,
+  "violations": [],
+  "confusion": {
+   "P4->A(active)": 56,
+   "A->P4(candidate)": 1
+  },
+  "slip": null
+ },
+ {
+  "kind": "E1",
+  "seed": 1,
+  "nis_mean": 2.8477840989710774,
+  "n_nis": 1078,
+  "pct_correct": 95.10729613733906,
+  "n_assign": 1165,
+  "merges": 1,
+  "false_merges": 0,
+  "deferred": 9,
+  "revisit_candidates": 0,
+  "late_dups": 3,
+  "wrong_resolvable": 45,
+  "wrong_unresolvable": 12,
+  "pose_wrong_resolvable": 45,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 86.83602771362587,
+  "ap4_n": 433,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 2,
+   "C": 3,
+   "P15": 2,
+   "B": 1
+  },
+  "one_each": false,
+  "bias_reject": 59,
+  "bias_accept": 854,
+  "wrong": null,
+  "bias_ambiguous": 252,
+  "violations": [],
+  "confusion": {
+   "P4->A(active)": 57
+  },
+  "slip": null
+ },
+ {
+  "kind": "E1",
+  "seed": 2,
+  "nis_mean": 2.7699294024550083,
+  "n_nis": 1136,
+  "pct_correct": 94.8542024013722,
+  "n_assign": 1166,
+  "merges": 1,
+  "false_merges": 0,
+  "deferred": 8,
+  "revisit_candidates": 2,
+  "late_dups": 3,
+  "wrong_resolvable": 33,
+  "wrong_unresolvable": 27,
+  "pose_wrong_resolvable": 33,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 86.01398601398601,
+  "ap4_n": 429,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 2,
+   "P15": 3,
+   "B": 2
+  },
+  "one_each": false,
+  "bias_reject": 51,
+  "bias_accept": 964,
+  "wrong": null,
+  "bias_ambiguous": 151,
+  "violations": [],
+  "confusion": {
+   "P4->A(active)": 60
+  },
+  "slip": null
+ },
+ {
+  "kind": "E1",
+  "seed": 3,
+  "nis_mean": 3.0669963239545845,
+  "n_nis": 1009,
+  "pct_correct": 94.68556244464128,
+  "n_assign": 1129,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 17,
+  "revisit_candidates": 9,
+  "late_dups": 2,
+  "wrong_resolvable": 42,
+  "wrong_unresolvable": 18,
+  "pose_wrong_resolvable": 39,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 86.33257403189066,
+  "ap4_n": 439,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 3,
+   "P15": 1,
+   "B": 2
+  },
+  "one_each": false,
+  "bias_reject": 78,
+  "bias_accept": 822,
+  "wrong": null,
+  "bias_ambiguous": 229,
+  "violations": [],
+  "confusion": {
+   "P4->A(active)": 60
+  },
+  "slip": null
+ },
+ {
+  "kind": "E1",
+  "seed": 4,
+  "nis_mean": 3.004570657251029,
+  "n_nis": 1047,
+  "pct_correct": 94.67140319715809,
+  "n_assign": 1126,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 11,
+  "revisit_candidates": 6,
+  "late_dups": 3,
+  "wrong_resolvable": 45,
+  "wrong_unresolvable": 15,
+  "pose_wrong_resolvable": 43,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 85.91549295774648,
+  "ap4_n": 426,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 2,
+   "C": 1,
+   "P15": 2,
+   "B": 2
+  },
+  "one_each": false,
+  "bias_reject": 59,
+  "bias_accept": 797,
+  "wrong": null,
+  "bias_ambiguous": 270,
+  "violations": [],
+  "confusion": {
+   "P4->A(active)": 60
+  },
+  "slip": null
+ },
+ {
+  "kind": "E2",
+  "seed": 0,
+  "nis_mean": 2.9438906768719786,
+  "n_nis": 1036,
+  "pct_correct": 99.45004582951421,
+  "n_assign": 1091,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 18,
+  "revisit_candidates": 8,
+  "late_dups": 1,
+  "wrong_resolvable": 1,
+  "wrong_unresolvable": 5,
+  "pose_wrong_resolvable": 1,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 98.61431870669746,
+  "ap4_n": 433,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 1,
+   "P15": 2,
+   "B": 2
+  },
+  "one_each": false,
+  "bias_reject": 81,
+  "bias_accept": 932,
+  "wrong": null,
+  "bias_ambiguous": 78,
+  "violations": [],
+  "confusion": {
+   "P4->A(active)": 2,
+   "A->P4(active)": 4
+  },
+  "slip": null
+ },
+ {
+  "kind": "E2",
+  "seed": 1,
+  "nis_mean": 3.0353040333558687,
+  "n_nis": 893,
+  "pct_correct": 99.80842911877394,
+  "n_assign": 1044,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 29,
+  "revisit_candidates": 14,
+  "late_dups": 1,
+  "wrong_resolvable": 0,
+  "wrong_unresolvable": 2,
+  "pose_wrong_resolvable": 0,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 99.53917050691244,
+  "ap4_n": 434,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 2,
+   "C": 1,
+   "P15": 1,
+   "B": 2
+  },
+  "one_each": false,
+  "bias_reject": 91,
+  "bias_accept": 680,
+  "wrong": null,
+  "bias_ambiguous": 273,
+  "violations": [],
+  "confusion": {
+   "P4->A(active)": 1,
+   "A->P4(active)": 1
+  },
+  "slip": null
+ },
+ {
+  "kind": "E2",
+  "seed": 2,
+  "nis_mean": 2.769188871083146,
+  "n_nis": 1078,
+  "pct_correct": 90.12987012987013,
+  "n_assign": 1155,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 11,
+  "revisit_candidates": 8,
+  "late_dups": 1,
+  "wrong_resolvable": 75,
+  "wrong_unresolvable": 39,
+  "pose_wrong_resolvable": 74,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 73.97260273972603,
+  "ap4_n": 438,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 1,
+   "P15": 2,
+   "B": 2
+  },
+  "one_each": false,
+  "bias_reject": 61,
+  "bias_accept": 956,
+  "wrong": null,
+  "bias_ambiguous": 138,
+  "violations": [],
+  "confusion": {
+   "P4->A(active)": 114
+  },
+  "slip": null
+ },
+ {
+  "kind": "E2",
+  "seed": 3,
+  "nis_mean": 2.7733945502292303,
+  "n_nis": 1070,
+  "pct_correct": 99.21259842519684,
+  "n_assign": 1143,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 16,
+  "revisit_candidates": 8,
+  "late_dups": 0,
+  "wrong_resolvable": 0,
+  "wrong_unresolvable": 9,
+  "pose_wrong_resolvable": 0,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 97.95454545454545,
+  "ap4_n": 440,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 1,
+   "P15": 2,
+   "B": 2
+  },
+  "one_each": false,
+  "bias_reject": 60,
+  "bias_accept": 882,
+  "wrong": null,
+  "bias_ambiguous": 201,
+  "violations": [],
+  "confusion": {
+   "P4->A(active)": 7,
+   "A->P4(active)": 2
+  },
+  "slip": null
+ },
+ {
+  "kind": "E2",
+  "seed": 4,
+  "nis_mean": 2.7999363206822925,
+  "n_nis": 1068,
+  "pct_correct": 95.63699825479931,
+  "n_assign": 1146,
+  "merges": 1,
+  "false_merges": 0,
+  "deferred": 10,
+  "revisit_candidates": 8,
+  "late_dups": 0,
+  "wrong_resolvable": 9,
+  "wrong_unresolvable": 41,
+  "pose_wrong_resolvable": 9,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 88.71331828442437,
+  "ap4_n": 443,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 1,
+   "P15": 2,
+   "B": 2
+  },
+  "one_each": false,
+  "bias_reject": 34,
+  "bias_accept": 855,
+  "wrong": null,
+  "bias_ambiguous": 257,
+  "violations": [],
+  "confusion": {
+   "P4->A(active)": 50
+  },
+  "slip": null
+ },
+ {
+  "kind": "E3",
+  "seed": 0,
+  "nis_mean": 3.0520283691770955,
+  "n_nis": 1056,
+  "pct_correct": 98.9769820971867,
+  "n_assign": 1173,
+  "merges": 1,
+  "false_merges": 0,
+  "deferred": 6,
+  "revisit_candidates": 3,
+  "late_dups": 0,
+  "wrong_resolvable": 0,
+  "wrong_unresolvable": 12,
+  "pose_wrong_resolvable": 0,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 97.17647058823529,
+  "ap4_n": 425,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 2,
+   "P15": 3,
+   "B": 3
+  },
+  "one_each": false,
+  "bias_reject": 93,
+  "bias_accept": 783,
+  "wrong": null,
+  "bias_ambiguous": 297,
+  "violations": [],
+  "confusion": {
+   "A->P4(active)": 11,
+   "P4->A(active)": 1
+  },
+  "slip": null
+ },
+ {
+  "kind": "E3",
+  "seed": 1,
+  "nis_mean": 2.860826985841903,
+  "n_nis": 1003,
+  "pct_correct": 97.93103448275862,
+  "n_assign": 1160,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 12,
+  "revisit_candidates": 8,
+  "late_dups": 0,
+  "wrong_resolvable": 1,
+  "wrong_unresolvable": 23,
+  "pose_wrong_resolvable": 0,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 93.92405063291139,
+  "ap4_n": 395,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 2,
+   "P15": 4,
+   "B": 4
+  },
+  "one_each": false,
+  "bias_reject": 80,
+  "bias_accept": 767,
+  "wrong": null,
+  "bias_ambiguous": 313,
+  "violations": [],
+  "confusion": {
+   "A->P4(active)": 22,
+   "A->P4(candidate)": 2
+  },
+  "slip": null
+ },
+ {
+  "kind": "E3",
+  "seed": 2,
+  "nis_mean": 3.0543860679957473,
+  "n_nis": 1037,
+  "pct_correct": 98.22335025380711,
+  "n_assign": 1182,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 13,
+  "revisit_candidates": 10,
+  "late_dups": 1,
+  "wrong_resolvable": 0,
+  "wrong_unresolvable": 21,
+  "pose_wrong_resolvable": 0,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 94.98806682577566,
+  "ap4_n": 419,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 2,
+   "P15": 4,
+   "B": 4
+  },
+  "one_each": false,
+  "bias_reject": 143,
+  "bias_accept": 714,
+  "wrong": null,
+  "bias_ambiguous": 325,
+  "violations": [],
+  "confusion": {
+   "A->P4(candidate)": 1,
+   "A->P4(active)": 19,
+   "P4->A(active)": 1
+  },
+  "slip": null
+ },
+ {
+  "kind": "E3",
+  "seed": 3,
+  "nis_mean": 2.9624486142036077,
+  "n_nis": 1021,
+  "pct_correct": 98.62424763542562,
+  "n_assign": 1163,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 8,
+  "revisit_candidates": 3,
+  "late_dups": 1,
+  "wrong_resolvable": 0,
+  "wrong_unresolvable": 16,
+  "pose_wrong_resolvable": 0,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 96.15384615384616,
+  "ap4_n": 416,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 2,
+   "P15": 3,
+   "B": 5
+  },
+  "one_each": false,
+  "bias_reject": 88,
+  "bias_accept": 828,
+  "wrong": null,
+  "bias_ambiguous": 247,
+  "violations": [],
+  "confusion": {
+   "A->P4(active)": 14,
+   "P4->A(active)": 2
+  },
+  "slip": null
+ },
+ {
+  "kind": "E3",
+  "seed": 4,
+  "nis_mean": 3.062654575185364,
+  "n_nis": 1070,
+  "pct_correct": 99.5693367786391,
+  "n_assign": 1161,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 8,
+  "revisit_candidates": 5,
+  "late_dups": 1,
+  "wrong_resolvable": 0,
+  "wrong_unresolvable": 5,
+  "pose_wrong_resolvable": 0,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 98.78345498783455,
+  "ap4_n": 411,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 2,
+   "P15": 3,
+   "B": 4
+  },
+  "one_each": false,
+  "bias_reject": 111,
+  "bias_accept": 855,
+  "wrong": null,
+  "bias_ambiguous": 195,
+  "violations": [],
+  "confusion": {
+   "A->P4(active)": 5
+  },
+  "slip": null
+ },
+ {
+  "kind": "E4",
+  "seed": 0,
+  "nis_mean": 2.9744774932885645,
+  "n_nis": 1045,
+  "pct_correct": 92.619926199262,
+  "n_assign": 1084,
+  "merges": 1,
+  "false_merges": 0,
+  "deferred": 15,
+  "revisit_candidates": 10,
+  "late_dups": 1,
+  "wrong_resolvable": 34,
+  "wrong_unresolvable": 46,
+  "pose_wrong_resolvable": 31,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 80.44009779951101,
+  "ap4_n": 409,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 1,
+   "P15": 2,
+   "B": 2
+  },
+  "one_each": false,
+  "bias_reject": 45,
+  "bias_accept": 827,
+  "wrong": null,
+  "bias_ambiguous": 212,
+  "violations": [],
+  "confusion": {
+   "P4->A(candidate)": 4,
+   "P4->A(active)": 75,
+   "A->P4(candidate)": 1
+  },
+  "slip": null
+ },
+ {
+  "kind": "E4",
+  "seed": 1,
+  "nis_mean": 2.835646943869233,
+  "n_nis": 1047,
+  "pct_correct": 97.90337283500456,
+  "n_assign": 1097,
+  "merges": 1,
+  "false_merges": 0,
+  "deferred": 19,
+  "revisit_candidates": 11,
+  "late_dups": 2,
+  "wrong_resolvable": 10,
+  "wrong_unresolvable": 13,
+  "pose_wrong_resolvable": 10,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 94.34889434889435,
+  "ap4_n": 407,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 1,
+   "P15": 2,
+   "B": 2
+  },
+  "one_each": false,
+  "bias_reject": 59,
+  "bias_accept": 885,
+  "wrong": null,
+  "bias_ambiguous": 153,
+  "violations": [],
+  "confusion": {
+   "P4->A(active)": 23
+  },
+  "slip": null
+ },
+ {
+  "kind": "E4",
+  "seed": 2,
+  "nis_mean": 3.0455968826523185,
+  "n_nis": 1094,
+  "pct_correct": 96.51162790697674,
+  "n_assign": 1118,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 16,
+  "revisit_candidates": 8,
+  "late_dups": 1,
+  "wrong_resolvable": 19,
+  "wrong_unresolvable": 20,
+  "pose_wrong_resolvable": 19,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 90.41769041769042,
+  "ap4_n": 407,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 1,
+   "P15": 2,
+   "B": 2
+  },
+  "one_each": false,
+  "bias_reject": 59,
+  "bias_accept": 947,
+  "wrong": null,
+  "bias_ambiguous": 112,
+  "violations": [],
+  "confusion": {
+   "A->P4(active)": 3,
+   "P4->A(active)": 36
+  },
+  "slip": null
+ },
+ {
+  "kind": "E4",
+  "seed": 3,
+  "nis_mean": 2.999143395661641,
+  "n_nis": 1083,
+  "pct_correct": 96.38989169675091,
+  "n_assign": 1108,
+  "merges": 1,
+  "false_merges": 0,
+  "deferred": 14,
+  "revisit_candidates": 9,
+  "late_dups": 2,
+  "wrong_resolvable": 14,
+  "wrong_unresolvable": 26,
+  "pose_wrong_resolvable": 14,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 90.0990099009901,
+  "ap4_n": 404,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 1,
+   "P15": 2,
+   "B": 3
+  },
+  "one_each": false,
+  "bias_reject": 45,
+  "bias_accept": 921,
+  "wrong": null,
+  "bias_ambiguous": 142,
+  "violations": [],
+  "confusion": {
+   "A->P4(active)": 2,
+   "P4->A(active)": 38
+  },
+  "slip": null
+ },
+ {
+  "kind": "E4",
+  "seed": 4,
+  "nis_mean": 2.898659731973953,
+  "n_nis": 1094,
+  "pct_correct": 99.5640802092415,
+  "n_assign": 1147,
+  "merges": 0,
+  "false_merges": 0,
+  "deferred": 10,
+  "revisit_candidates": 5,
+  "late_dups": 0,
+  "wrong_resolvable": 0,
+  "wrong_unresolvable": 5,
+  "pose_wrong_resolvable": 0,
+  "unres_planes": [
+   "A",
+   "P4"
+  ],
+  "ap4_accuracy": 98.86621315192744,
+  "ap4_n": 441,
+  "invariants": 0,
+  "active_per_plane": {
+   "floor": 1,
+   "C": 1,
+   "P15": 2,
+   "B": 2
+  },
+  "one_each": false,
+  "bias_reject": 45,
+  "bias_accept": 947,
+  "wrong": null,
+  "bias_ambiguous": 155,
+  "violations": [],
+  "confusion": {
+   "A->P4(active)": 4,
+   "P4->A(active)": 1
+  },
+  "slip": null
+ }
+]

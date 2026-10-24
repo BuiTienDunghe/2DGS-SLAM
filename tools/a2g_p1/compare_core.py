@@ -71,8 +71,8 @@ def main():
         p, e, b = (R[seq].get(k, {}).get("ate_all_cm") for k in ("p1core", "e1c", "base"))
         if p is not None and e is not None and b is not None:
             de, db = pct(p, e), pct(p, b)
-            summary.append(f"- **{seq}:** P1 core {f(p)} cm; so với E1c {f(e)} cm: {de:+.1f} % ({verdict(de)}); "
-                           f"so với baseline {f(b)} cm: {db:+.1f} % ({verdict(db)}).".replace(".", ",", 0))
+            summary.append(f"- **{seq}:** P1 core {f(p)} cm; so với E1c {f(e)} cm: {f(de, 1)} % ({verdict(de)}); "
+                           f"so với baseline {f(b)} cm: {f(db, 1)} % ({verdict(db)}).")
         elif p is None:
             summary.append(f"- **{seq}:** không có run P1 core hoàn chỉnh.")
     L.append("## Tóm tắt\n")
