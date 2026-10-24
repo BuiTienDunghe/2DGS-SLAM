@@ -141,6 +141,38 @@ def compute(run):
             pct_jump=100 * jump_fail / max(n_jc, 1), pairs_dropped=dropped,
             init_sources={s: sum(1 for r in fr if r["init"]["source"] == s) for s in
                           ("plane", "jc_jump", "rank_lt6", "none_pairs")})
+    if is_p1:                                             # P1 core extras (pairs carry the unambiguous flag)
+        fr = jsonl(os.path.join(run, "pw_frames.jsonl"))
+        if fr and fr[0].get("pairs") and "unambiguous" in (fr[0]["pairs"][0] if fr[0]["pairs"] else {"unambiguous": 0}):
+            icf, icn, una, dT = [], [], [], []
+            for r in fr:
+                for q in r.get("pairs", []):
+                    if q.get("nis") is None:
+                        continue
+                    (icf if q.get("fresh") else icn).append(q["nis"])
+                    una.append(bool(q.get("unambiguous")))
+                if r["init"].get("dT_gate") is not None:
+                    dT.append(r["init"]["dT_gate"])
+            kf = jsonl(os.path.join(run, "pw_kf.jsonl"))
+            rf = [x["nis"] for r in kf for x in r.get("reassign", []) if x.get("fresh")]
+            fin = {}
+            if os.path.exists(os.path.join(run, "anchors_final.json")):
+                fin = json.load(open(os.path.join(run, "anchors_final.json")))
+            prim = [a for a in fin.get("anchors", []) if a["primary_id"] == a["id"]]
+            bth = [float(np.degrees(np.linalg.norm(a["bhat"][:2]))) for a in prim]
+            bd = [1000 * abs(a["bhat"][2]) for a in prim]
+            pw = m.get("pw", {})
+            out.update(core=True, nis_ic_fresh_mean=float(np.mean(icf)) if icf else None,
+                       nis_ic_fresh_median=float(np.median(icf)) if icf else None, n_ic_fresh=len(icf),
+                       nis_ic_stale_mean=float(np.mean(icn)) if icn else None, n_ic_stale=len(icn),
+                       nis_reassign_fresh_mean=float(np.mean(rf)) if rf else None, n_reassign_fresh=len(rf),
+                       pct_unambiguous=100.0 * np.mean(una) if una else None,
+                       bhat_theta_deg_median=float(np.median(bth)) if bth else None,
+                       bhat_d_mm_median=float(np.median(bd)) if bd else None,
+                       deferred=pw.get("deferred"), revisit_candidates=pw.get("revisit_candidates"),
+                       bias_accept=pw.get("bias_accept"), bias_reject=pw.get("bias_reject"),
+                       bias_ambiguous=pw.get("bias_ambiguous"),
+                       dT_gate_median=float(np.median(dT)) if dT else None)
     return out
 
 
