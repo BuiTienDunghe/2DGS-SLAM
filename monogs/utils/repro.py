@@ -40,6 +40,8 @@ def seed_process(seed, proc):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    if os.environ.get("MONOGS_DETERMINISTIC", "0") == "1":   # PLAN §4.2 search for the remaining source (off by default)
+        torch.use_deterministic_algorithms(True, warn_only=True)
     o3d_seed = False
     try:
         import open3d as o3d

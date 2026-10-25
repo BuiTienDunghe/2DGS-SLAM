@@ -1,0 +1,23 @@
+{
+ "a": "results_monogs/A/fr1_desk/sp_r1",
+ "b": "results_monogs/A/fr1_desk/sp_r2",
+ "kf_identical": false,
+ "n_kf": [
+  109,
+  108
+ ],
+ "n_kf_common": 30,
+ "max_kf_centre_diff_cm": 0.7286003431237149,
+ "max_frame_centre_diff_cm": 1.6744543887487622,
+ "first_frame_diff_gt_1mm": 1,
+ "ate_kf_cm": [
+  1.4291294456267036,
+  1.5444256088084503
+ ],
+ "ate_all_cm": [
+  1.4312244429304346,
+  1.4690446347066202
+ ],
+ "rel_noise_kf": 0.08067580129607281,
+ "rel_noise_all": 0.026425059998799807
+}
