@@ -71,22 +71,22 @@ Cặp "cùng mặt": hai segment cách nhau ≤ 10 frame track, góc world ≤ 3
 |---|---|---|---|---|---|---|---|---|
 | P-closest | không | không | 7,9·10^4 | 8,45 | 4,84 | 3,73 | 4,4 | -5,439 |
 | P-closest | không | có | 7,9·10^4 | 8,45 | 4,84 | 3,73 | 4,4 | -5,438 |
-| P-closest | có | không | 10·10^4 (biên) | 11,93 | 7,05 | 5,65 | 6,6 | -5,095 |
-| P-closest | có | có | 10·10^4 (biên) | 11,93 | 7,05 | 5,66 | 6,6 | -5,095 |
-| P-first | không | không | 10·10^4 (biên) | 9,77 | 5,98 | 3,69 | 4,5 | -5,691 |
-| P-first | không | có | 10·10^4 (biên) | 9,77 | 5,98 | 3,69 | 4,5 | -5,691 |
-| P-first | có | không | 10·10^4 (biên) | 19,63 | 10,61 | 6,15 | 7,6 | -5,209 |
-| P-first | có | có | 10·10^4 (biên) | 19,63 | 10,61 | 6,15 | 7,6 | -5,209 |
+| P-closest | có | không | 10^5 (biên) | 11,93 | 7,05 | 5,65 | 6,6 | -5,095 |
+| P-closest | có | có | 10^5 (biên) | 11,93 | 7,05 | 5,66 | 6,6 | -5,095 |
+| P-first | không | không | 10^5 (biên) | 9,77 | 5,98 | 3,69 | 4,5 | -5,691 |
+| P-first | không | có | 10^5 (biên) | 9,77 | 5,98 | 3,69 | 4,5 | -5,691 |
+| P-first | có | không | 10^5 (biên) | 19,63 | 10,61 | 6,15 | 7,6 | -5,209 |
+| P-first | có | có | 10^5 (biên) | 19,63 | 10,61 | 6,15 | 7,6 | -5,209 |
 | P-closest-act | không | không | 7,9·10^4 | 8,44 | 4,81 | 3,56 | 4,4 | -5,344 |
 | P-closest-act | không | có | 7,9·10^4 | 8,44 | 4,81 | 3,56 | 4,4 | -5,344 |
-| P-closest-act | có | không | 10·10^4 (biên) | 11,77 | 6,75 | 5,37 | 6,6 | -5,033 |
-| P-closest-act | có | có | 10·10^4 (biên) | 11,77 | 6,75 | 5,37 | 6,6 | -5,033 |
-| P-first-act | không | không | 10·10^4 (biên) | 9,53 | 5,80 | 3,52 | 4,2 | -5,649 |
-| P-first-act | không | có | 10·10^4 (biên) | 9,53 | 5,80 | 3,52 | 4,2 | -5,649 |
-| P-first-act | có | không | 10·10^4 (biên) | 17,20 | 9,16 | 5,89 | 7,7 | -5,255 |
-| P-first-act | có | có | 10·10^4 (biên) | 17,20 | 9,16 | 5,89 | 7,7 | -5,255 |
+| P-closest-act | có | không | 10^5 (biên) | 11,77 | 6,75 | 5,37 | 6,6 | -5,033 |
+| P-closest-act | có | có | 10^5 (biên) | 11,77 | 6,75 | 5,37 | 6,6 | -5,033 |
+| P-first-act | không | không | 10^5 (biên) | 9,53 | 5,80 | 3,52 | 4,2 | -5,649 |
+| P-first-act | không | có | 10^5 (biên) | 9,53 | 5,80 | 3,52 | 4,2 | -5,649 |
+| P-first-act | có | không | 10^5 (biên) | 17,20 | 9,16 | 5,89 | 7,7 | -5,255 |
+| P-first-act | có | có | 10^5 (biên) | 17,20 | 9,16 | 5,89 | 7,7 | -5,255 |
 
-**Khóa:** luật **P-first**, ảnh màu **không**, cha mẹ anchor **không**, **λ = 10·10^4** (NLL G thấp nhất của E-rel trên snt_near). λ nằm ở **biên trên của lưới plan**; mở rộng lưới tới 10^9 (chỉ chẩn đoán) thì cực trị ở λ ≈ 4·10^5.
+**Khóa:** luật **P-first**, ảnh màu **không**, cha mẹ anchor **không**, **λ = 10^5** (NLL G thấp nhất của E-rel trên snt_near). λ nằm ở **biên trên của lưới plan**; mở rộng lưới tới 10^9 (chỉ chẩn đoán) thì cực trị ở λ ≈ 4·10^5.
 
 Mô hình so sánh fit trên snt_near: Γ (chéo, mỗi frame track) = 1.32e-04, 1.23e-04, 1.40e-05, 4.78e-06, 5.83e-06, 1.74e-05; κ_t² = 7.521e-03 m²/m, κ_r² = 8.566e-04 rad²/rad; Σ₀ đầy đủ 6×6.
 
@@ -94,16 +94,16 @@ Mô hình so sánh fit trên snt_near: Γ (chéo, mỗi frame track) = 1.32e-04,
 
 | Chuỗi / run | Frame | KF | σ_c | % pixel có chủ | λ fit riêng (G3) | NIS₆ TB | NIS₆ trung vị | Cặp E-rel | NIS₃ TB | NIS₃ trung vị | % > χ² | NLL G | NLL T | NLL D | NLL C |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| snt_near / E1c | 530 | 53 | 0,0073 | 77 | 10·10^4 (biên) | 9,77 | 5,98 | 1828 | 3,69 | 2,56 | 4,5 | -5,691 | -5,892 | -5,686 | -6,918 |
+| snt_near / E1c | 530 | 53 | 0,0073 | 77 | 10^5 (biên) | 9,77 | 5,98 | 1828 | 3,69 | 2,56 | 4,5 | -5,691 | -5,892 | -5,686 | -6,918 |
 | snt_far / baseline | 395 | 25 | 0,0058 | 90 | 1,6·10^4 | 8,39 | 3,24 | 0 | — | — | — | — | — | — | — |
-| snt_far / E1c | 395 | 25 | 0,0056 | 92 | 10·10^3 | 5,89 | 3,79 | 1612 | 0,78 | 0,21 | 0,0 | -6,811 | -7,098 | -6,842 | -7,193 |
-| snt_far / P1 core | 395 | 38 | 0,0066 | 89 | 10·10^3 | 10,39 | 3,90 | 1410 | 0,77 | 0,31 | 0,9 | -6,731 | -6,288 | -6,232 | -6,543 |
-| st_far / baseline | 456 | 34 | 0,0096 | 90 | 10·10^3 | 5,34 | 3,01 | 0 | — | — | — | — | — | — | — |
+| snt_far / E1c | 395 | 25 | 0,0056 | 92 | 10^4 | 5,89 | 3,79 | 1612 | 0,78 | 0,21 | 0,0 | -6,811 | -7,098 | -6,842 | -7,193 |
+| snt_far / P1 core | 395 | 38 | 0,0066 | 89 | 10^4 | 10,39 | 3,90 | 1410 | 0,77 | 0,31 | 0,9 | -6,731 | -6,288 | -6,232 | -6,543 |
+| st_far / baseline | 456 | 34 | 0,0096 | 90 | 10^4 | 5,34 | 3,01 | 0 | — | — | — | — | — | — | — |
 | st_far / E1c | 456 | 32 | 0,0150 | 91 | 1,6·10^4 | 9,58 | 6,24 | 1658 | 0,68 | 0,46 | 0,1 | -6,101 | -5,962 | -5,383 | -6,425 |
 | st_far / P1 core | 456 | 33 | 0,0152 | 90 | 1,3·10^4 | 10,61 | 4,60 | 1576 | 0,48 | 0,15 | 0,3 | -6,329 | -6,979 | -6,531 | -7,409 |
-| room / baseline | 658 | 321 | 0,0256 | 79 | 10·10^4 (biên) | 31,43 | 5,45 | 0 | — | — | — | — | — | — | — |
-| room / E1c | 658 | 290 | 0,0342 | 78 | 10·10^4 (biên) | 11,06 | 5,86 | 2993 | 3,11 | 1,66 | 4,3 | -5,592 | 18,684 | -4,177 | 3,217 |
-| room / P1 core | 658 | 311 | 0,0375 | 72 | 10·10^4 (biên) | 89,86 | 6,47 | 3008 | 2,99 | 1,43 | 5,3 | -5,376 | 30,056 | -2,800 | 16,715 |
+| room / baseline | 658 | 321 | 0,0256 | 79 | 10^5 (biên) | 31,43 | 5,45 | 0 | — | — | — | — | — | — | — |
+| room / E1c | 658 | 290 | 0,0342 | 78 | 10^5 (biên) | 11,06 | 5,86 | 2993 | 3,11 | 1,66 | 4,3 | -5,592 | 18,684 | -4,177 | 3,217 |
+| room / P1 core | 658 | 311 | 0,0375 | 72 | 10^5 (biên) | 89,86 | 6,47 | 3008 | 2,99 | 1,43 | 5,3 | -5,376 | 30,056 | -2,800 | 16,715 |
 
 ![sd dự đoán so với |d| thật trên snt_far](sd_vs_absd_snt_far.png)
 
@@ -115,13 +115,67 @@ Mô hình so sánh fit trên snt_near: Γ (chéo, mỗi frame track) = 1.32e-04,
 
 | Run | λ riêng | NIS₃ TB | % > χ² | NLL G | NLL T | NLL D | NLL C | Thắng |
 |---|---|---|---|---|---|---|---|---|
-| snt_near / E1c | 10·10^4 | 3,69 | 4,5 | -5,691 | -5,892 | -5,686 | -6,918 | C |
-| snt_far / E1c | 10·10^3 | 4,56 | 11,2 | -7,141 | -8,698 | -8,541 | -9,123 | C |
-| snt_far / P1 core | 10·10^3 | 2,87 | 2,7 | -7,874 | -6,506 | -6,609 | -7,747 | G |
+| snt_near / E1c | 10^5 | 3,69 | 4,5 | -5,691 | -5,892 | -5,686 | -6,918 | C |
+| snt_far / E1c | 10^4 | 4,56 | 11,2 | -7,141 | -8,698 | -8,541 | -9,123 | C |
+| snt_far / P1 core | 10^4 | 2,87 | 2,7 | -7,874 | -6,506 | -6,609 | -7,747 | G |
 | st_far / E1c | 1,6·10^4 | 1,80 | 0,1 | -7,026 | -6,167 | -5,504 | -7,409 | C |
 | st_far / P1 core | 1,3·10^4 | 1,54 | 0,6 | -7,662 | -7,310 | -7,352 | -8,817 | C |
-| room / E1c | 10·10^4 | 3,11 | 4,3 | -5,592 | -4,666 | -4,979 | -5,023 | G |
-| room / P1 core | 10·10^4 | 2,99 | 5,3 | -5,376 | -4,528 | -4,807 | -4,167 | G |
+| room / E1c | 10^5 | 3,11 | 4,3 | -5,592 | -4,666 | -4,979 | -5,023 | G |
+| room / P1 core | 10^5 | 2,99 | 5,3 | -5,376 | -4,528 | -4,807 | -4,167 | G |
+
+## 3. Cổng (mục 3.5)
+
+Biến thể và λ khóa trên snt_near. G1: NIS₃ TB trong [2; 4,5] và % > χ²₃(0,99) ≤ 3 % (cần ≥ 3/4). G2: NLL TB của G thấp hơn cả T, D, C (cần 4/4). G3: λ fit riêng trong [λ/2; 2λ] (chỉ báo cáo). room chỉ báo cáo.
+
+| Trường hợp | NIS₃ TB | % > χ² | G1 | NLL G / T / D / C | G2 | λ riêng | G3 |
+|---|---|---|---|---|---|---|---|
+| snt_far / E1c | 0,78 | 0,0 | trượt | -6,811 / -7,098 / -6,842 / -7,193 | trượt | 10^4 | trượt |
+| snt_far / P1 core | 0,77 | 0,9 | trượt | -6,731 / -6,288 / -6,232 / -6,543 | đạt | 10^4 | trượt |
+| st_far / E1c | 0,68 | 0,1 | trượt | -6,101 / -5,962 / -5,383 / -6,425 | trượt | 1,6·10^4 | trượt |
+| st_far / P1 core | 0,48 | 0,3 | trượt | -6,329 / -6,979 / -6,531 / -7,409 | trượt | 1,3·10^4 | trượt |
+| room / E1c (chỉ báo cáo) | 3,11 | 4,3 | trượt | -5,592 / 18,684 / -4,177 / 3,217 | đạt | 10^5 | đạt |
+| room / P1 core (chỉ báo cáo) | 2,99 | 5,3 | trượt | -5,376 / 30,056 / -2,800 / 16,715 | đạt | 10^5 | đạt |
+
+**G1: 0/4 (cần ≥ 3). G2: 1/4 (cần 4). → Cổng TRƯỢT.** Bỏ Bước 1–2; report chỉ gồm Bước 0 (mục 3.5 của plan).
+
+## 4. Phân tích: giả định nào sai
+
+**1. Thông tin tính theo pixel (hoặc ô) độc lập không đo đúng độ chính xác thật, và hệ số bù phụ thuộc chuỗi.** Đây là nguyên nhân trực tiếp làm cổng trượt.
+- **A3:** với σ₀ = 0, NIS thô của cặp segment lớn hơn kỳ vọng hàng trăm lần. Mức này phụ thuộc độ sâu:
+  - TB 2 607 trên snt_near (gần) so với 265 trên snt_far (xa), gấp khoảng 10 lần;
+  - trong một chuỗi, NIS tăng theo số ô và theo độ dư fit.
+  Một hệ số λ_s toàn cục chỉ đúng ở chuỗi dùng để hiệu chỉnh. Sau khi khóa, NIS TB là 0,92 trên snt_far và 1,19 trên st_far, tức quá thận trọng; còn snt_near và room vẫn có 6–7 % cặp vượt χ².
+- **A2:** λ của gia phả lặp lại đúng hệ số đó. Trên snt_near, λ chạm biên 10^5 (cực trị ngoài lưới, khoảng 4·10^5). Trên snt_far và st_far, λ fit riêng chỉ khoảng 10^4. Vì vậy G3 trượt.
+- **Hệ quả:** khóa λ trên snt_near làm G quá thận trọng trên hai chuỗi far: NIS₃ TB 0,48–0,78, dưới khoảng [2; 4,5]. Vì thế G1 trượt 4/4, và NLL của G bị kéo lên.
+- **Cách giải thích hợp lý:** sai số depth và sai số căn chỉnh tương quan theo không gian, nên thông tin thật bão hòa thay vì tăng tuyến tính theo Σ 1/σ_z². Điều này nặng hơn ở tầm gần, nơi σ_z(z) = b·z² nhỏ.
+
+**2. Cấu trúc "trộn cha mẹ" (M3) đúng với đa số frame, nhưng sai số có đuôi nặng.**
+- NIS₆ trung vị của E-local là 3–7 ở mọi run, gần kỳ vọng 6.
+- NIS₆ trung bình 5–11 trên fr3, 11–90 trên room: phần chênh do vài frame có cú nhảy sai số lớn. Phân phối Gaussian không mô tả được các cú nhảy này, và maximum likelihood bị kéo về phía λ lớn để bao chúng.
+
+**3. Sai số tương đối frame–anchor trên fr3 gần như đứng yên; trên room thì đúng là tích lũy theo gia phả.**
+- Ở chẩn đoán thang riêng (2.3), λ và T/D/C được fit lại trên chính từng run. Khi đó:
+  - mô hình hằng C vẫn thắng trên snt_near, snt_far/E1c và cả hai run st_far;
+  - G thắng trên snt_far/P1 core và cả hai run room.
+- **fr3:** cảnh nhỏ, 25–53 keyframe, camera quét đi quét lại cùng cấu trúc. Sai số giữa frame và keyframe tạo anchor gần như là một độ lệch cố định. G lại cộng dồn Q_mot ở các hướng không ai giữ, nên dự đoán phương sai tăng theo khoảng cách gia phả.
+- **room:** 290–321 keyframe, khám phá nhiều nhánh. Các mô hình T, C fit trên snt_near hỏng hẳn (NLL +3 tới +30). Riêng G vẫn hiệu chỉnh tốt (NIS₃ TB 3,11 / 2,99) và có NLL thấp nhất. Đây là điểm mạnh thật của mô hình: chuyển được sang cảnh khác mà không cần fit lại.
+
+**4. Ảnh màu và cha mẹ anchor không giúp.**
+- Thêm thông tin photometric làm E-rel kém đi trên snt_near (NIS₃ 5,4–6,2, NLL cao hơn). σ_c đo được khoảng 0,007 (thang [0, 1]), nên thông tin photometric bị đếm quá tay, cùng kiểu lỗi ở mục 1.
+- Thông tin từ plane (khoảng 1e4) nhỏ hơn thông tin depth hàng chục nghìn lần, nên có hay không có cha mẹ anchor gần như không đổi kết quả.
+
+**5. room (chỉ báo cáo):**
+- G1 trượt chỉ vì tỉ lệ vượt χ² (4,3 % và 5,3 %, ngưỡng 3 %); NIS₃ TB đúng kỳ vọng.
+- G2 đạt rõ ở cả hai run.
+- Run P1 core trên room có NIS₆ TB 90: đuôi nặng (mục 2), trên một quỹ đạo sai số lớn (ATE 45 cm).
+
+## 5. Đề xuất cho vòng sau
+
+1. **Thay thông tin pixel độc lập bằng mô hình bão hòa.** Ví dụ: số mẫu độc lập hiệu dụng mỗi frame, hoặc một sàn sai số theo segment hay vùng. Kiểm bằng chính công cụ Bước 0, với tiêu chí λ fit riêng mỗi chuỗi nằm trong [λ/2; 2λ] (G3). Chỉ khi G3 đạt thì λ khóa trên snt_near mới dùng được cho chuỗi khác.
+2. **Thêm thành phần đứng yên vào độ bất định tương đối:** Cov(ε_k − ε_t) = gia phả + Σ₀. fr3 cho thấy phần sai số gần như cố định; room cho thấy phần tích lũy theo gia phả. Mô hình lai giữ được cả hai.
+3. **Đuôi nặng:** kiểm định bền (ví dụ Student-t cho E-local, hoặc loại cú nhảy trước khi fit λ) để λ không bị vài frame quyết định.
+4. **Mở rộng lưới λ** (cực trị nằm ngoài 10^5), hoặc tốt hơn là làm mục 1 để λ quay về khoảng hợp lý.
+5. Không cần thêm photometric hay cha mẹ anchor trước khi sửa mục 1, vì cả hai đều bị lấn át bởi lỗi thang thông tin.
 
 ## Khác plan, và các lựa chọn ở chỗ plan chưa nói rõ
 

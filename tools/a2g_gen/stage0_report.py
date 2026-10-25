@@ -25,7 +25,7 @@ def f(x, nd=2):
 
 
 def lamf(x):
-    e = int(np.floor(np.log10(x)))
+    e = int(np.floor(np.log10(x) + 1e-9))
     m = x / 10 ** e
     return (f"{m:.2g}".replace(".", ",") + f"·10^{e}") if abs(m - 1) > 1e-6 else f"10^{e}"
 
