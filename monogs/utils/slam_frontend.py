@@ -11,8 +11,12 @@ from utils.camera_utils import Camera
 from utils.eval_utils import eval_ate, save_gaussians
 from utils.logging_utils import Log
 from utils.multiprocessing_utils import clone_obj
-from utils.pose_utils import update_pose
+from utils.pose_utils import SE3_exp, update_pose
 from utils.slam_utils import get_loss_tracking, get_median_depth
+# PLAN MONOGS-E1C §5: E1c (plane anchors + direction-decoupled pose step); only used when PlaneTracking.enable
+import json
+from utils.obs_decouple import DecoupledPoseStep
+from utils.plane_anchor import PlaneAnchorMap, PlaneExtractor, plane_c2w
 
 
 class FrontEnd(mp.Process):
@@ -53,6 +57,70 @@ class FrontEnd(mp.Process):
         self.kf_interval = self.config["Training"]["kf_interval"]
         self.window_size = self.config["Training"]["window_size"]
         self.single_thread = self.config["Training"]["single_thread"]
+
+        # PLAN MONOGS-E1C §5.2 (2): E1c objects; nothing is created when PlaneTracking.enable is false
+        pt = self.config.get("PlaneTracking", {}) or {}
+        self.pt_cfg = pt
+        self.pt_enable = bool(pt.get("enable", False))
+        self.plane_extractor = self.plane_anchors = None
+        self.plane_ms = []
+        self._pinfo = None
+        self._f_e1c = self._f_anc = None
+        if self.pt_enable:
+            self.pt_use_init = bool(pt.get("use_init", True))
+            self.pt_use_loss = bool(pt.get("use_loss", True))
+            self.pt_lambda = float(pt.get("lambda_plane", 1.0))
+            self.pt_decouple = bool(pt.get("decouple", False))
+            self.plane_K = np.array([[self.dataset.fx, 0.0, self.dataset.cx], [0.0, self.dataset.fy, self.dataset.cy],
+                                     [0.0, 0.0, 1.0]])
+            self.plane_extractor = PlaneExtractor(pt)
+            self.plane_anchors = PlaneAnchorMap(pt, self.plane_K, self.dataset.height, self.dataset.width)
+            Log(f"[E1c] enabled: lambda_plane={self.pt_lambda} decouple={self.pt_decouple} "
+                f"use_init={self.pt_use_init} use_loss={self.pt_use_loss}", tag="E1c")
+
+    # ------------------------------------------------------------------ PLAN MONOGS-E1C §5.2 (1): pose forms
+    @staticmethod
+    def T_w2c(viewpoint):
+        T = torch.eye(4, device=viewpoint.R.device, dtype=torch.float32)
+        T[0:3, 0:3] = viewpoint.R
+        T[0:3, 3] = viewpoint.T
+        return T
+
+    @staticmethod
+    def set_T_w2c(viewpoint, T):
+        viewpoint.update_RT(T[0:3, 0:3].clone().float(), T[0:3, 3].clone().float())
+
+    def _e1c_log_frame(self, idx, viewpoint, pinfo, iters):
+        """e1c_frames.jsonl (write only): per frame and per measured plane, (n, d) in the world with the final pose."""
+        if self.save_dir is None or pinfo is None:
+            return
+        if self._f_e1c is None:
+            self._f_e1c = open(f"{self.save_dir}/e1c_frames.jsonl", "w")
+        T = self.T_w2c(viewpoint).detach().cpu().double().numpy()
+        match = dict(pinfo["pairs"])
+        pl = []
+        for pi, p in enumerate(pinfo["planes"]):
+            n_w, d_w = plane_c2w(p.n.numpy(), p.d, T)
+            pl.append(dict(n_w=[float(x) for x in n_w], d_w=float(d_w), n_px=int(p.n_px),
+                           anchor=None if pi not in match else int(match[pi])))
+        act = self.plane_anchors.active_pairs(pinfo["pairs"]) if pinfo["pairs"] else []
+        row = dict(frame=int(idx), init_source=pinfo["init_source"], n_planes=len(pinfo["planes"]),
+                   n_pairs=len(pinfo["pairs"]), n_active_pairs=len(act), sigma_min=pinfo["sigma_min"], iters=iters,
+                   ms_extract=pinfo["ms_extract"], ms_match=pinfo["ms_match"], ms_solve=pinfo["ms_solve"],
+                   n_anchors=len(self.plane_anchors.anchors), n_anchors_active=self.plane_anchors.n_active(), planes=pl)
+        self._f_e1c.write(json.dumps(row) + "\n")
+        self._f_e1c.flush()
+
+    def _e1c_log_anchors(self, idx):
+        """anchors.jsonl (write only), at every keyframe."""
+        if self.save_dir is None:
+            return
+        if self._f_anc is None:
+            self._f_anc = open(f"{self.save_dir}/anchors.jsonl", "w")
+        a = [dict(id=int(x.id), n_w=[float(v) for v in x.n_w.numpy()], d_w=float(x.d_w), n_obs_kf=int(x.n_obs_kf),
+                  active=bool(x.active), created_kf=int(x.created_kf)) for x in self.plane_anchors.anchors.values()]
+        self._f_anc.write(json.dumps(dict(frame=int(idx), anchors=a)) + "\n")
+        self._f_anc.flush()
 
     def add_new_keyframe(self, cur_frame_idx, depth=None, opacity=None, init=False):
         rgb_boundary_threshold = self.config["Training"]["rgb_boundary_threshold"]
@@ -119,6 +187,13 @@ class FrontEnd(mp.Process):
 
         # Initialise the frame at the ground truth pose
         viewpoint.update_RT(viewpoint.R_gt, viewpoint.T_gt)
+        if self.pt_enable:  # PLAN MONOGS-E1C §5.2 (3): anchors of frame 0 (GT pose), active at once
+            planes = self.plane_extractor(viewpoint.depth, self.plane_K)
+            self.plane_anchors.update_at_keyframe(cur_frame_idx, planes, [], self.T_w2c(viewpoint))
+            self._e1c_log_frame(cur_frame_idx, viewpoint, dict(planes=planes, pairs=[], init_source="gt",
+                                                               sigma_min=float("nan"), ms_extract=0.0, ms_match=0.0,
+                                                               ms_solve=0.0), 0)
+            self._e1c_log_anchors(cur_frame_idx)
 
         self.kf_indices = []
         depth_map = self.add_new_keyframe(cur_frame_idx, init=True)
@@ -129,21 +204,51 @@ class FrontEnd(mp.Process):
         prev = self.cameras[cur_frame_idx - self.use_every_n_frames]
         viewpoint.update_RT(prev.R, prev.T)
 
+        # PLAN MONOGS-E1C §5.2 (4): planes -> match -> closed-form init -> loss context (E1c only)
+        ctx, dec = None, None
+        self._pinfo = None
+        if self.pt_enable:
+            t0 = time.perf_counter()
+            planes = self.plane_extractor(viewpoint.depth, self.plane_K)
+            t1 = time.perf_counter()
+            T_init = self.T_w2c(viewpoint)
+            pairs = self.plane_anchors.match(planes, T_init)
+            t2 = time.perf_counter()
+            T_plane = self.plane_anchors.solve_pose(planes, pairs, T_init)
+            t3 = time.perf_counter()
+            init_source = "rejected" if self.plane_anchors.last_solve_status == "rejected" else "prev"
+            if self.pt_use_init and T_plane is not None:
+                self.set_T_w2c(viewpoint, T_plane)
+                init_source = "plane"
+            if self.pt_use_loss:
+                ctx = self.plane_anchors.make_loss_ctx(planes, pairs, viewpoint.R.device, torch.float32)
+            self._pinfo = dict(planes=planes, pairs=pairs, init_source=init_source,
+                               sigma_min=float(self.plane_anchors.last_sigma_min), ms_extract=1000 * (t1 - t0),
+                               ms_match=1000 * (t2 - t1), ms_solve=1000 * (t3 - t2))
+            self.plane_ms.append(1000 * (t3 - t0))
+            if self.pt_decouple:  # §5.2 (5): pose deltas leave MonoGS's Adam; DecoupledPoseStep with MonoGS lrs
+                m_np = ctx["m"].double().cpu().numpy() if ctx is not None else np.zeros((0, 3))
+                dec = DecoupledPoseStep(m_np, float(self.pt_cfg.get("obs_threshold", self.plane_anchors.min_sv)),
+                                        self.config["Training"]["lr"]["cam_trans_delta"],
+                                        self.config["Training"]["lr"]["cam_rot_delta"],
+                                        device=viewpoint.R.device, dtype=torch.float32)
+
         opt_params = []
-        opt_params.append(
+        if dec is None:
+          opt_params.append(
             {
                 "params": [viewpoint.cam_rot_delta],
                 "lr": self.config["Training"]["lr"]["cam_rot_delta"],
                 "name": "rot_{}".format(viewpoint.uid),
             }
-        )
-        opt_params.append(
+          )
+          opt_params.append(
             {
                 "params": [viewpoint.cam_trans_delta],
                 "lr": self.config["Training"]["lr"]["cam_trans_delta"],
                 "name": "trans_{}".format(viewpoint.uid),
             }
-        )
+          )
         opt_params.append(
             {
                 "params": [viewpoint.exposure_a],
@@ -173,11 +278,27 @@ class FrontEnd(mp.Process):
             loss_tracking = get_loss_tracking(
                 self.config, image, depth, opacity, viewpoint
             )
+            g_p_t = g_p_r = None
+            if ctx is not None:  # PLAN MONOGS-E1C §5.2 (5): plane term on SE3_exp(tau) @ T_w2c (same tau as render)
+                tau = torch.cat([viewpoint.cam_trans_delta, viewpoint.cam_rot_delta], 0)
+                plane_loss = self.plane_anchors.plane_loss_ctx(SE3_exp(tau) @ self.T_w2c(viewpoint), ctx)
+                if dec is not None:
+                    g_p_t, g_p_r = torch.autograd.grad(self.pt_lambda * plane_loss,
+                                                       [viewpoint.cam_trans_delta, viewpoint.cam_rot_delta])
+                else:
+                    loss_tracking = loss_tracking + self.pt_lambda * plane_loss
             loss_tracking.backward()
 
             with torch.no_grad():
                 pose_optimizer.step()
+                if dec is not None:  # merge render / plane gradients per observable direction
+                    d_t, d_r = dec.step(viewpoint.cam_trans_delta.grad, viewpoint.cam_rot_delta.grad, g_p_t, g_p_r)
+                    viewpoint.cam_trans_delta.copy_(d_t)
+                    viewpoint.cam_rot_delta.copy_(d_r)
+                    viewpoint.cam_trans_delta.grad = None
+                    viewpoint.cam_rot_delta.grad = None
                 converged = update_pose(viewpoint)
+                self._track_iters = tracking_itr + 1
 
             if tracking_itr % 10 == 0:
                 self.q_main2vis.put(
@@ -398,6 +519,8 @@ class FrontEnd(mp.Process):
                 render_pkg = self.tracking(cur_frame_idx, viewpoint)
                 torch.cuda.synchronize()
                 self.track_ms.append(1000 * (time.perf_counter() - t_trk))  # log only (excludes the 3 fps sleep)
+                if self.pt_enable:  # PLAN MONOGS-E1C §5.2 (7), write only
+                    self._e1c_log_frame(cur_frame_idx, viewpoint, self._pinfo, getattr(self, "_track_iters", None))
 
                 current_window_dict = {}
                 current_window_dict[self.current_window[0]] = self.current_window[1:]
@@ -459,6 +582,13 @@ class FrontEnd(mp.Process):
                         opacity=render_pkg["opacity"],
                         init=False,
                     )
+                    if self.pt_enable and self._pinfo is not None:
+                        # PLAN MONOGS-E1C §5.2 (6): planes of this frame (not re-extracted), re-matched with the
+                        # tracked pose, then the anchor update (pose before MonoGS's local BA, as E1c on 2DGS-SLAM)
+                        T_kf = self.T_w2c(viewpoint)
+                        pairs_kf = self.plane_anchors.match(self._pinfo["planes"], T_kf)
+                        self.plane_anchors.update_at_keyframe(cur_frame_idx, self._pinfo["planes"], pairs_kf, T_kf)
+                        self._e1c_log_anchors(cur_frame_idx)
                     self.request_keyframe(
                         cur_frame_idx, viewpoint, self.current_window, depth_map
                     )
