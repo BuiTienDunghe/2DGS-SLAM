@@ -1,0 +1,31 @@
+T1: 3 planes, n_px=[44000, 80000, 170000]
+T1: normal err 0.002 deg, d err 0.002 cm
+T1: normal err 0.009 deg, d err 0.009 cm
+T1: normal err 0.213 deg, d err 0.776 cm
+tests/test_plane_anchor.py::test_T1_extractor_room_corner PASSED (0.0 s)
+tests/test_plane_anchor.py::test_T2_plane_transform_roundtrip PASSED (0.0 s)
+T3: clean worst 2.41e-06 deg / 6.35e-16 m; noisy rot median 0.470 max 0.806 deg, centre median 0.746 max 2.459 cm, trials over limit 7/20
+Traceback (most recent call last):
+  File "/home/wslphu/2DGS-SLAM-monogs/monogs/tests/run_tests.py", line 24, in <module>
+    mod.__dict__[n]()
+  File "/home/wslphu/2DGS-SLAM-monogs/monogs/tests/test_plane_anchor.py", line 194, in test_T3_solve_pose
+    assert n_bad == 0
+AssertionError
+tests/test_plane_anchor.py::test_T3_solve_pose FAILED (0.0 s)
+tests/test_plane_anchor.py::test_T4_gradcheck_plane_loss PASSED (0.2 s)
+T5: iters 75, rot err 0.0776 deg, centre err 0.638 mm, final loss 2.391e-03
+tests/test_plane_anchor.py::test_T5_plane_loss_only_converges PASSED (0.5 s)
+T6: anchors 5, world->anchor {2: 0, 3: 1, 0: 2, 1: 3, 4: 4}, created {2: 0, 3: 0, 0: 0, 1: 0, 4: 10}
+tests/test_plane_anchor.py::test_T6_corridor_match_and_update PASSED (0.2 s)
+== 5 passed, 1 failed ==
+T10: worst relative difference 0.000e+00 over 200 x 120 steps on cuda
+tests/test_obs_decouple.py::test_T10_manual_adam_equals_adamw PASSED (26.4 s)
+T11: max |d dist/d rot| 4.44e-16, max |d normal/d trans| 0.00e+00
+tests/test_obs_decouple.py::test_T11_blocks_decouple PASSED (0.0 s)
+T12: floor+2 parallel: n_obs_t 2, n_obs_r 3, free dir err 0.00e+00 deg
+T12: floor only: n_obs_t 1, n_obs_r 2, free rot err 0.00e+00 deg
+tests/test_obs_decouple.py::test_T12_obs_basis_configs PASSED (0.0 s)
+T13: dec  sum|d_xi| free axis 0.000e+00, free change 2.89e-03 mm, observed residual 0.026 mm, n_obs_t 2
+T13: ours free change 1.957 mm, observed residual 0.009 mm
+tests/test_obs_decouple.py::test_T13_plane_only_free_direction PASSED (1.2 s)
+== 4 passed, 0 failed ==

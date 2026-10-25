@@ -1,0 +1,21 @@
+{
+ "total_s": 163.72228125,
+ "n_frames": 200,
+ "n_kf": 9,
+ "frame_offset": 0,
+ "ms_track_mean": 519.1284243124783,
+ "ms_track_median": 529.7025670006406,
+ "ms_plane_mean": 15.931446738652276,
+ "n_tracked": 199,
+ "max_orth_dev": 3.248012152992836e-05,
+ "max_abs_det_minus_1": 2.6605746896390947e-05,
+ "repro": {
+  "seed": 0,
+  "range": [
+   0,
+   200
+  ],
+  "method": "e1c",
+  "frame_offset": 0
+ }
+}

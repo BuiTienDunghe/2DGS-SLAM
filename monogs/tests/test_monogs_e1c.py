@@ -106,21 +106,37 @@ def t2():
             return float(loss), torch.cat([v.cam_trans_delta.grad, v.cam_rot_delta.grad]).double().cpu().numpy()
         return float(loss)
 
-    res = {}
-    for delta in (1e-4, 1e-3):
-        l0, g_an = loss_at(T0, grad=True)
-        g_fd = np.zeros(6)
+    def check(tag, deltas=(1e-4, 1e-3)):
+        out = {}
+        for delta in deltas:
+            l0, g_an = loss_at(T0, grad=True)
+            g_fd = np.zeros(6)
+            with torch.no_grad():
+                for i in range(6):
+                    e = torch.zeros(6, device="cuda")
+                    e[i] = delta
+                    g_fd[i] = (loss_at(SE3_exp(e) @ T0) - loss_at(SE3_exp(-e) @ T0)) / (2 * delta)
+            cos = float(g_an @ g_fd / (np.linalg.norm(g_an) * np.linalg.norm(g_fd) + 1e-30))
+            big = np.abs(g_fd) > 0.2 * np.abs(g_fd).max()
+            out[f"{tag}_delta_{delta:g}"] = dict(loss=l0, grad_rasterizer=g_an.tolist(), grad_fd=g_fd.tolist(), cos=cos,
+                                                 sign_large_ok=bool(np.all(np.sign(g_an[big]) == np.sign(g_fd[big]))))
+        return out
+
+    # (diagnostic) fresh map straight from the point cloud: opacity ~0.5, the opacity-weighted colour term dominates
+    res = check("fresh_map")
+    # (test) map optimised like MonoGS initialize_map (frame 40 at GT, 500 iterations): the tracked state of the system
+    from utils.slam_utils import get_loss_mapping
+    for _ in range(500):
+        pkg = render(cam0, g, pipe, bg)
+        get_loss_mapping(cfg, pkg["render"], pkg["depth"], cam0, pkg["opacity"], initialization=True).backward()
         with torch.no_grad():
-            for i in range(6):
-                e = torch.zeros(6, device="cuda")
-                e[i] = delta
-                g_fd[i] = (loss_at(SE3_exp(e) @ T0) - loss_at(SE3_exp(-e) @ T0)) / (2 * delta)
-        cos = float(g_an @ g_fd / (np.linalg.norm(g_an) * np.linalg.norm(g_fd) + 1e-30))
-        big = np.abs(g_fd) > 0.2 * np.abs(g_fd).max()
-        sign_ok = bool(np.all(np.sign(g_an[big]) == np.sign(g_fd[big])))
-        res[f"delta_{delta:g}"] = dict(loss=l0, grad_rasterizer=g_an.tolist(), grad_fd=g_fd.tolist(), cos=cos,
-                                       sign_large_ok=sign_ok)
-    main = res["delta_0.0001"]
+            g.optimizer.step()
+            g.optimizer.zero_grad(set_to_none=True)
+    with torch.no_grad():
+        v.update_RT(T0[:3, :3].clone(), T0[:3, 3].clone())
+        res["mapped_opacity_gt_095_fraction"] = float((render(v, g, pipe, bg)["opacity"] > 0.95).float().mean())
+    res.update(check("mapped"))
+    main = res["mapped_delta_0.0001"]
     return dict(passed=main["cos"] >= 0.95 and main["sign_large_ok"], **res)
 
 
