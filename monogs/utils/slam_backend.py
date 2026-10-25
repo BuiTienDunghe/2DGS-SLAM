@@ -11,6 +11,7 @@ from utils.logging_utils import Log
 from utils.multiprocessing_utils import clone_obj
 from utils.pose_utils import update_pose
 from utils.slam_utils import get_loss_mapping
+from utils import repro
 
 
 class BackEnd(mp.Process):
@@ -58,11 +59,9 @@ class BackEnd(mp.Process):
         self.gaussian_reset = self.config["Training"]["gaussian_reset"]
         self.size_threshold = self.config["Training"]["size_threshold"]
         self.window_size = self.config["Training"]["window_size"]
-        self.single_thread = (
-            self.config["Dataset"]["single_thread"]
-            if "single_thread" in self.config["Dataset"]
-            else False
-        )
+        # PLAN MONOGS-E1C §3.1: same key as the frontend (Training.single_thread); Dataset.single_thread only as
+        # a fallback when Training lacks it (originally the backend read Dataset.single_thread only)
+        self.single_thread = repro.single_thread_flags(self.config)[1]
 
     def add_next_kf(self, frame_idx, viewpoint, init=False, scale=2.0, depth_map=None):
         self.gaussians.extend_from_pcd_seq(
@@ -365,6 +364,12 @@ class BackEnd(mp.Process):
         self.frontend_queue.put(msg)
 
     def run(self):
+        # PLAN MONOGS-E1C §3.1-3.2: the spawned process does not inherit the RNG state -> seed + 1; log flags
+        repro.seed_process(self.config.get("Repro", {}).get("seed", 0) + 1, "backend")
+        fe, be = repro.single_thread_flags(self.config)
+        Log(f"[Repro] proc=backend single_thread={be} (frontend={fe})", tag="Repro")
+        if fe != be:
+            raise RuntimeError(f"single_thread differs: frontend {fe}, backend {be}")
         while True:
             if self.backend_queue.empty():
                 if self.pause:

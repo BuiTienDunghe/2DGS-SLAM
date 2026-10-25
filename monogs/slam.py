@@ -12,7 +12,7 @@ from munch import munchify
 import wandb
 from gaussian_splatting.scene.gaussian_model import GaussianModel
 from gaussian_splatting.utils.system_utils import mkdir_p
-from gui import gui_utils, slam_gui
+from gui import gui_utils  # slam_gui (glfw / OpenGL) is imported lazily, only when use_gui (headless runs)
 from utils.config_utils import load_config
 from utils.dataset import load_dataset
 from utils.eval_utils import eval_ate, eval_rendering, save_gaussians
@@ -20,6 +20,7 @@ from utils.logging_utils import Log
 from utils.multiprocessing_utils import FakeQueue
 from utils.slam_backend import BackEnd
 from utils.slam_frontend import FrontEnd
+from utils import repro
 
 
 class SLAM:
@@ -55,6 +56,7 @@ class SLAM:
         self.dataset = load_dataset(
             model_params, model_params.source_path, config=config
         )
+        repro.apply_range(self.dataset, config)  # --range BEGIN END (no-op without it)
 
         self.gaussians.training_setup(opt_params)
         bg_color = [0, 0, 0]
@@ -102,6 +104,8 @@ class SLAM:
 
         backend_process = mp.Process(target=self.backend.run)
         if self.use_gui:
+            from gui import slam_gui
+
             gui_process = mp.Process(target=slam_gui.run, args=(self.params_gui,))
             gui_process.start()
             time.sleep(5)
@@ -117,6 +121,8 @@ class SLAM:
         FPS = N_frames / (start.elapsed_time(end) * 0.001)
         Log("Total time", start.elapsed_time(end) * 0.001, tag="Eval")
         Log("Total FPS", N_frames / (start.elapsed_time(end) * 0.001), tag="Eval")
+        if save_dir is not None:  # write-only outputs (PLAN MONOGS-E1C §3.3)
+            repro.write_outputs(self.frontend, self.dataset, save_dir, start.elapsed_time(end) * 0.001)
 
         if self.eval_rendering:
             self.gaussians = self.frontend.gaussians
@@ -203,6 +209,11 @@ if __name__ == "__main__":
     parser = ArgumentParser(description="Training script parameters")
     parser.add_argument("--config", type=str)
     parser.add_argument("--eval", action="store_true")
+    # PLAN MONOGS-E1C §3.3 (added; defaults keep the original behaviour except the seed, §3.2)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--save-dir", type=str, default=None)
+    parser.add_argument("--range", type=int, nargs=2, default=None, metavar=("BEGIN", "END"))
+    parser.add_argument("--method", type=str, default="base", choices=["base", "e1c", "e1c_s"])
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -212,6 +223,8 @@ if __name__ == "__main__":
         config = yaml.safe_load(yml)
 
     config = load_config(args.config)
+    repro.configure(config, args)  # seed, range, method -> config["Repro"], PlaneTracking block
+    repro.seed_process(args.seed, "main")
     save_dir = None
 
     if args.eval:
@@ -233,6 +246,8 @@ if __name__ == "__main__":
         save_dir = os.path.join(
             config["Results"]["save_dir"], path[-3] + "_" + path[-2], current_datetime
         )
+        if args.save_dir is not None:  # exact run directory (PLAN §3.3)
+            save_dir = os.path.abspath(args.save_dir)
         tmp = args.config
         tmp = tmp.split(".")[0]
         config["Results"]["save_dir"] = save_dir

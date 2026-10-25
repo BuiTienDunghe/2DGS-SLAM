@@ -35,3 +35,8 @@ wandb/
 .cursor/
 .cursorrules
 bak/
+
+# PLAN MONOGS-E1C
+results_monogs/
+monogs/datasets
+datasets

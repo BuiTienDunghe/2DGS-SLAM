@@ -1,0 +1,9 @@
+inherit_from: "configs/rgbd/tum/fr1_desk.yaml"
+# PLAN MONOGS-E1C §2.5: single-thread (frontend and backend), headless
+Training:
+  single_thread: True
+Dataset:
+  single_thread: True
+Results:
+  use_gui: False
+  save_results: True

@@ -328,6 +328,11 @@ class FrontEnd(mp.Process):
         projection_matrix = projection_matrix.to(device=self.device)
         tic = torch.cuda.Event(enable_timing=True)
         toc = torch.cuda.Event(enable_timing=True)
+        # PLAN MONOGS-E1C §3.1-3.3 (log only)
+        Log(f"[Repro] proc=frontend single_thread={self.single_thread} "
+            f"tf32_matmul={torch.backends.cuda.matmul.allow_tf32} tf32_cudnn={torch.backends.cudnn.allow_tf32}",
+            tag="Repro")
+        self.track_ms = []
 
         while True:
             if self.q_vis2main.empty():
@@ -389,7 +394,10 @@ class FrontEnd(mp.Process):
                 )
 
                 # Tracking
+                t_trk = time.perf_counter()
                 render_pkg = self.tracking(cur_frame_idx, viewpoint)
+                torch.cuda.synchronize()
+                self.track_ms.append(1000 * (time.perf_counter() - t_trk))  # log only (excludes the 3 fps sleep)
 
                 current_window_dict = {}
                 current_window_dict[self.current_window[0]] = self.current_window[1:]

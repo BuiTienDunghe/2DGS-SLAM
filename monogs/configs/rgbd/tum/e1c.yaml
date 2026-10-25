@@ -1,0 +1,24 @@
+# PLAN MONOGS-E1C §5.3: E1c parameters, locked (exp/e1c-decouple, dec seed 0). Loaded by slam.py --method e1c|e1c_s
+PlaneTracking:
+  enable: true
+  lambda_plane: 1.0
+  sigma_normal: 0.02
+  sigma_dist: 0.01
+  cell_size: 20
+  c_noise: 3.0
+  merge_angle_deg: 10
+  merge_dist_k: 3.0
+  min_plane_pixels: 3200
+  max_plane_depth: 4.0
+  match_max_angle_deg: 10
+  match_max_dist_m: 0.10
+  match_min_overlap: 0.3
+  min_singular_value: 0.3
+  solve_max_trans_m: 0.20
+  solve_max_rot_deg: 15
+  activate_after_kf: 2
+  use_init: true
+  use_loss: true
+  decouple: true
+  obs_threshold: 0.3
+  gate_plane_loss: false
