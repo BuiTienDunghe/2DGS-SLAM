@@ -20,7 +20,7 @@ Sinh bằng `tools/monogs/pw/make_report_pw.py`. Nhánh `exp/monogs-pw`. 1 seed 
 **Kết luận lượt 1 (1 seed):**
 1. **`full` chưa hơn E1c.** Tốt hơn trên snt_far (3,51 so với 6,24 cm), nhưng tệ hơn trên st_far (1,78 so với 1,16 cm) và snt_near 0–700 (27,0 so với 7,5 cm; gần bằng base 26,4 cm).
 2. **Plane world sạch hơn, nhưng gần như không còn cặp để dùng.** Bản trùng và đổi ID giảm mạnh, ghép nhầm giảm khoảng một nửa (theo nhãn GT). Đổi lại, kernel loại 56–70 % cặp ứng viên, và hơn một nửa số cặp bị loại là cặp đúng. Ứng viên rất ít khi được kích hoạt, nên "đủ" chỉ còn 3–9 % frame (E1c: 47–66 %). Nguyên nhân: mô hình nhiễu chỉ có nhiễu đo (đo bằng pose GT, σ_n = 0,24°, σ_d ≈ 0,76 cm), trong khi sai số pose tracking giữa keyframe tạo anchor và frame hiện tại cỡ vài cm. Cặp đúng vì vậy cũng có e = 3–5.
-3. **1b giảm giật trên st_far:** RPE của `full` là 0,92 cm, gần base 0,88; `full_nob` là 1,37. Phần chia s_k theo đúng hướng (snt > st). Nhưng κ không chuyển được giữa hai chuỗi validation (chênh hơn 40 lần). Trên snt, `full` giật hơn base 2–3 lần, phần lớn do khởi tạo dạng đóng, nhiều keyframe T1 và các lần PGO dời pose.
+3. **1b giảm giật trên st_far:** RPE của `full` là 0,92 cm, gần base 0,88; `full_nob` là 1,37. Phần chia s_k theo đúng hướng (snt > st). Nhưng κ không chuyển được giữa hai chuỗi validation (chênh hơn 40 lần). Trên snt, `full` giật hơn base 2–3 lần. Các frame giật nhất là frame chỉ còn 0–2 cặp active (kernel đã loại phần còn lại), không phải frame khởi tạo bằng plane.
 
 
 ## 2. Hiệu chỉnh (mục 4, chi tiết ở `pw/CALIB_PW.md`)
@@ -115,7 +115,7 @@ Trung vị (phân vị 25–75 %) tại keyframe; s_k chỉ ở trục có c_pla
 3. **Ứng viên tạo / xóa quá nhiều** (snt_far: 218 tạo, 189 xóa, 4 kích hoạt). Cũng là hệ quả của gợi ý 1.
 4. **κ:** hai chuỗi validation chênh hơn 40 lần, nên một κ chung không đúng ở cả hai. Muốn giữ 1b thì cần κ theo cảnh, ví dụ ước lượng κ khi chạy từ độ cứng render, hoặc đơn vị thông tin khác cho render. Phần này cần thiết kế lại, không phải chỉnh số.
 5. **PGO chậm:** trung bình khoảng 95 s mỗi lần trên snt_far, vì scipy dựng lại toàn bộ đồ thị với Jacobian sai phân. Nên dùng Jacobian giải tích hoặc GTSAM `CustomFactor`, và giới hạn đồ thị (ví dụ chỉ keyframe có quan sát mặt phẳng).
-6. **Giật trên snt:** các frame giật nhất của `full` thường là frame khởi tạo bằng plane khi chỉ còn ít cặp active, hoặc frame ngay sau PGO. Trên E1c, frame có lật ID giật gấp 1,8–2,9 lần (DIAG_E1C).
+6. **Giật:** ở cả ba chuỗi, ba frame giật nhất của `full` đều có khởi tạo `prev` hoặc `rejected` (không phải plane), và chỉ còn 0–2 cặp active sau khi kernel loại 2–5 cặp. Tức là chỗ giật nhất là chỗ plane gần như bị tắt, lại thêm keyframe T1/T2 ngay đó. Đây cũng là hệ quả của gợi ý 1. Trên E1c, frame có lật ID giật gấp 1,8–2,9 lần (DIAG_E1C).
 
 ## 7. Chỉ số theo nhãn GT (mục 8.2)
 
