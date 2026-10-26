@@ -1,0 +1,22 @@
+{
+ "total_s": 76.8575390625,
+ "n_frames": 100,
+ "n_kf": 4,
+ "frame_offset": 0,
+ "ms_track_mean": 532.2665153735675,
+ "ms_track_median": 514.8828859673813,
+ "ms_plane_mean": 14.816236796299691,
+ "n_tracked": 99,
+ "max_orth_dev": 5.031696491892142e-05,
+ "max_abs_det_minus_1": 4.2272841164869845e-05,
+ "repro": {
+  "seed": 0,
+  "range": [
+   0,
+   100
+  ],
+  "method": "full",
+  "frame_offset": 0,
+  "stiffness_every": 0
+ }
+}
