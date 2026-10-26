@@ -1,0 +1,116 @@
+{
+ "T8": {
+  "passed": true,
+  "a_sigma_est_deg": 0.4971110907010573,
+  "a_sigma_true_deg": 0.5,
+  "a_r1_estimator_deg": 0.3358897614698825,
+  "a_r1_ratio": 0.671779522939765,
+  "b_fits": [
+   [
+    0.003313576924034573,
+    0.001966407139887507
+   ],
+   [
+    0.008723667240508205,
+    0.0021048198931091513
+   ]
+  ],
+  "b_median": 0.002035613516498329,
+  "b_true": 0.002
+ },
+ "T9": {
+  "a": {
+   "passed": true,
+   "pairs": [
+    [
+     0,
+     1
+    ]
+   ],
+   "cand": 1,
+   "e_active": 4.174487544564717,
+   "e_cand": 0.19999999999999582
+  },
+  "b": {
+   "passed": true,
+   "active": true,
+   "n_anchors": [
+    2,
+    2
+   ]
+  },
+  "c": {
+   "passed": true,
+   "pairs": [
+    [
+     0,
+     0
+    ]
+   ]
+  },
+  "d": {
+   "passed": true,
+   "identical": true,
+   "mode": "cost"
+  },
+  "passed": true
+ },
+ "T10": {
+  "a": {
+   "passed": true,
+   "max_diff": 0.0,
+   "note": "DecoupledPoseStep with no inlier pair vs torch Adam on the render gradients (100 random steps)"
+  },
+  "b": {
+   "passed": true,
+   "n_inlier": 3
+  },
+  "passed": true
+ },
+ "T11": {
+  "a": {
+   "passed": true,
+   "max_diff": 2.731148640577885e-14
+  },
+  "b": {
+   "passed": true,
+   "err_before_cm": 11.573938732317668,
+   "err_after_cm": 2.98214533900518,
+   "status": "applied"
+  },
+  "c": {
+   "passed": true,
+   "irls_w": 0.058225382829361905,
+   "dropped": [
+    24
+   ],
+   "status": "applied"
+  },
+  "d": {
+   "passed": true,
+   "note": "odometry rows unchanged when plane-factor IRLS weights change"
+  },
+  "e": {
+   "passed": true,
+   "seconds": 0.3447197020286694,
+   "n_kf": 70,
+   "n_plane": 280,
+   "status": "applied"
+  },
+  "passed": true
+ },
+ "noise_used": {
+  "source": "tools/monogs/pw2/calib2.py: e1c runs on 3 fr3 validation sequences (frames 0-500)",
+  "sigma_n": 0.00642443710932247,
+  "sigma_d_a": 0.004295246286095851,
+  "sigma_d_b": 0.0009578991107732199,
+  "sigma_eff_n": 0.014480847187564318,
+  "sigma_eff_d_a": 0.0041149723804906465,
+  "sigma_eff_d_b": 0.004946870045866841,
+  "sigma_odo_t": 0.015934166442798086,
+  "sigma_odo_r": 0.01786899778234369,
+  "merge_deg": 2.7791574503475047,
+  "merge_m": 0.041734446009737546,
+  "kappa": 2915.655782860698
+ }
+}

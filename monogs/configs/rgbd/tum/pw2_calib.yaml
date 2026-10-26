@@ -1,0 +1,14 @@
+Noise:
+  source: 'tools/monogs/pw2/calib2.py: e1c runs on 3 fr3 validation sequences (frames
+    0-500)'
+  sigma_n: 0.00642443710932247
+  sigma_d_a: 0.004295246286095851
+  sigma_d_b: 0.0009578991107732199
+  sigma_eff_n: 0.014480847187564318
+  sigma_eff_d_a: 0.0041149723804906465
+  sigma_eff_d_b: 0.004946870045866841
+  sigma_odo_t: 0.015934166442798086
+  sigma_odo_r: 0.01786899778234369
+  merge_deg: 2.7791574503475047
+  merge_m: 0.041734446009737546
+  kappa: 2915.655782860698
