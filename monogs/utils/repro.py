@@ -29,13 +29,43 @@ PW_METHODS = {
     "full_nokf": ("nn", True, "attach", False, "info", "ours"),
     "sgs": ("nn", True, "attach", True, "info", "sgs"),
 }
-METHODS = ["base", "e1c", "e1c_s"] + list(PW_METHODS)
+PW2_CONFIG = "configs/rgbd/tum/pw2.yaml"
+PW2_CALIB = "configs/rgbd/tum/pw2_calib.yaml"
+# PLAN MONOGS-PW2 §2.7: method -> PGO mode (everything else from pw2.yaml)
+PW2_METHODS = {"pw2": "ours", "pw2_nopgo": "none"}
+METHODS = ["base", "e1c", "e1c_s"] + list(PW_METHODS) + list(PW2_METHODS) + ["base_kf"]
 
 
 def configure(config, args):
     config["Repro"] = dict(seed=int(args.seed), range=list(args.range) if args.range else None, method=args.method,
                            frame_offset=int(args.range[0]) if args.range else 0,
                            stiffness_every=int(getattr(args, "stiffness_every", 0) or 0))
+    if args.method == "base_kf":   # PLAN MONOGS-PW2 §2.6: base + keyframe every N frames (OR with MonoGS)
+        n = int(getattr(args, "kf_force_every", 0) or 0)
+        if n <= 0:
+            raise ValueError("--method base_kf needs --kf-force-every N > 0")
+        config["Training"]["kf_force_every"] = n
+        config["PlaneTracking"] = dict(enable=False)
+        return config
+    if args.method in PW2_METHODS:   # PLAN MONOGS-PW2 §2.7
+        import yaml
+        with open(E1C_CONFIG) as f:
+            pt = yaml.safe_load(f)["PlaneTracking"]
+        with open(PW_CONFIG) as f:
+            pw = yaml.safe_load(f)
+        with open(PW2_CONFIG) as f:
+            pw2 = yaml.safe_load(f)
+        with open(PW2_CALIB) as f:
+            cal = yaml.safe_load(f)
+        pt.update(pw["PlaneTracking"])
+        pt.update(pw2["PlaneTracking"])
+        pt.update(enable=True, pw=True, kf_trigger_t1=True)
+        config["PlaneTracking"] = pt
+        config["PGO"] = dict(pw["PGO"], **pw2.get("PGO", {}))
+        config["PGO"]["mode"] = PW2_METHODS[args.method]
+        config["Noise"] = cal["Noise"]
+        config["Stiffness"] = dict(pw["Stiffness"], at_keyframes=True)
+        return config
     if args.method in PW_METHODS:
         import yaml
         with open(E1C_CONFIG) as f:

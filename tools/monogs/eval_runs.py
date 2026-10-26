@@ -129,6 +129,12 @@ def run_metrics(run, max_frame=None):
     a_all, err_all = ate(est, gt)
     m["ate_all_cm"] = 100 * a_all
     m["rpe_d1_cm"] = 100 * rpe1(est, gt)
+    corr = os.path.join(run, "traj_all_corr.txt")   # PLAN MONOGS-PW2 §7: corrected trajectory (PGO-consistent)
+    if os.path.exists(corr):
+        _, ec = load_tum(corr)
+        ec = ec[:len(est)]
+        m["ate_all_corr_cm"] = 100 * ate(ec, gt)[0]
+        m["rpe_d1_corr_cm"] = 100 * rpe1(ec, gt)
     un = np.array([np.linalg.norm(e[:3, 3] - g[:3, 3]) for e, g in zip(est, gt)])
     m["unaligned_end_cm"] = 100 * float(un[-1])
     m["unaligned_max_cm"] = 100 * float(un.max())

@@ -546,6 +546,7 @@ class PWAnchorMap(PlaneAnchorMap):
         self.cl_cos = float(np.cos(np.deg2rad(cfg.get("closure_gate_deg", 15))))
         self.cl_dist = float(cfg.get("closure_gate_m", 0.30))
         self.cl_min_gap = int(cfg.get("closure_min_kf_gap", 8))
+        self.match_select = cfg.get("match_select", "cost")   # PLAN MONOGS-PW2 §2.2 (R1: cost)
         self.alias = {}
         self.kf_order = []            # keyframe ids in creation order
         self.events = []              # pending log rows (create / delete / activate / merge)
@@ -597,6 +598,17 @@ class PWAnchorMap(PlaneAnchorMap):
                 elif best_c is None or cost < best_c[0]:
                     best_c = (cost, aid)
             pick = best_a or best_c
+            if self.match_select == "e_first" and pick is not None:
+                # PLAN MONOGS-PW2 §2.2: inlier active (smallest e) > inlier candidate (smallest e) > R1 order
+                ins = []
+                for aid, a in self.anchors.items():
+                    if self._gate(p, a, T, self.max_cos, self.max_dist) is None:
+                        continue
+                    e = self.e_pair(p, a, T)
+                    if e <= self.inlier_e:
+                        ins.append((0 if a.active else 1, e, aid))
+                if ins:
+                    pick = (None, min(ins)[2])
             if pick is not None:
                 pairs.append((pi, pick[1]))
         return pairs

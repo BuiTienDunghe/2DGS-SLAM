@@ -1,0 +1,10 @@
+# PLAN MONOGS-PW2 §3: overrides of pw.yaml for the methods pw2, pw2_nopgo (loaded by slam.py --method pw2*)
+PlaneTracking:
+  match_mode: nn
+  match_select: e_first      # §2.2
+  robust: true
+  anchor_mode: attach
+  basis_from: inliers        # §2.3
+  scale_mode: e1c            # §2.5: 1b off (E1c plane scale, like full_nob)
+PGO:
+  robust: irls_factor        # §2.4

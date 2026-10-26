@@ -25,12 +25,22 @@ def _np(T):
     return T.detach().cpu().double().numpy()
 
 
+def basis_normals(amap, planes, act, T):
+    """PLAN MONOGS-PW2 §2.3: measured normals of the active pairs that are inliers (e <= inlier_e) at pose T."""
+    inl = [planes[pi].n.numpy() for pi, aid in act if amap.e_pair(planes[pi], amap.anchors[aid], T) <= amap.inlier_e]
+    return np.stack(inl) if inl else np.zeros((0, 3))
+
+
 class PWFront:
     def __init__(self, fe):
         cfg = fe.config
         self.pt = pt = cfg["PlaneTracking"]
         nz = cfg["Noise"]
         self.noise = NoiseModel(nz["sigma_n"], nz["sigma_d_a"], nz["sigma_d_b"])
+        self.noise_pgo = self.noise
+        if "sigma_eff_n" in nz:   # PLAN MONOGS-PW2 §2.1: sigma_eff for kernel / inlier, sigma_pgo for the PGO factors
+            self.noise = NoiseModel(nz["sigma_eff_n"], nz["sigma_eff_d_a"], nz["sigma_eff_d_b"])
+        self.basis_from = pt.get("basis_from", "all")
         self.s_odo_t, self.s_odo_r = float(nz["sigma_odo_t"]), float(nz["sigma_odo_r"])
         self.merge_deg, self.merge_m = float(nz["merge_deg"]), float(nz["merge_m"])
         self.scale_info = pt.get("scale_mode", "e1c") == "info"
@@ -52,6 +62,7 @@ class PWFront:
         self.huber_k, self.chi2 = float(pg.get("huber_k", 1.345)), float(pg.get("chi2_reject", 11.34))
         self.max_dt, self.max_dr = float(pg.get("max_dt_m", 1.0)), float(pg.get("max_dr_deg", 30.0))
         self.max_nfev = int(pg.get("max_nfev", 100))
+        self.pgo_robust = pg.get("robust", "scipy_huber")
         self.t1_count = 0
         self.last_t1_kf = -10 ** 9
         self.frame_cls = []                 # classification of the current frame at its final pose
@@ -67,7 +78,8 @@ class PWFront:
                           tier2=0, t1_kf=0, t2_kf=0, mono_kf=0, closure_accepted=0, closure_dropped=0)
         d = fe.save_dir
         self.f = {n: (open(os.path.join(d, n), "w") if d else None)
-                  for n in ("pw_frames.jsonl", "anchors.jsonl", "events.jsonl", "pgo.jsonl", "e1c_frames.jsonl")}
+                  for n in ("pw_frames.jsonl", "anchors.jsonl", "events.jsonl", "pgo.jsonl", "e1c_frames.jsonl")
+                  + (("pgo_poses.jsonl",) if self.pgo_robust == "irls_factor" else ())}
         Log(f"[PW] method={fe.config['Repro']['method']} match={self.map.match_mode} robust={self.robust} "
             f"anchor={self.map.anchor_mode} t1={self.t1_on} scale={'info' if self.scale_info else 'e1c'} "
             f"pgo={self.pgo_mode} sigma_n={np.degrees(self.noise.sn):.3f}deg sigma_d=({self.noise.a:.4f}+{self.noise.b:.5f}z^2) "
@@ -138,6 +150,9 @@ class PWFront:
         dec = None
         if bool(self.pt.get("decouple", True)):
             m_np = self.ctx["m"].double().cpu().numpy() if self.ctx is not None else np.zeros((0, 3))
+            if self.basis_from == "inliers":   # PLAN MONOGS-PW2 §2.3: basis from the inlier active pairs only
+                m_np = basis_normals(self.map, planes, act, _np(fe.T_w2c(viewpoint)))
+                self.pinfo["n_basis_pairs"] = int(len(m_np))
             dec = DecoupledPoseStep(m_np, float(self.pt.get("obs_threshold", self.map.min_sv)),
                                     fe.config["Training"]["lr"]["cam_trans_delta"], fe.config["Training"]["lr"]["cam_rot_delta"],
                                     device=viewpoint.R.device, dtype=torch.float32)
@@ -310,8 +325,22 @@ class PWFront:
                 obs.append((aid, k, q.n.numpy().copy(), float(q.d), plane_z(q), f"t2:{pi}"))
                 closure_idx.append(len(obs) - 1)
         self._log_anchors(k, "pre_pgo")
-        res = PG.solve_ours(kfs, P, odo, planes, obs, closure_idx, self.noise, self.s_odo_t, self.s_odo_r, k,
-                            self.huber_k, self.chi2, self.max_dt, self.max_dr, self.max_nfev)
+        if self.pgo_robust == "irls_factor":   # PLAN MONOGS-PW2 §2.4
+            res = PG.solve_ours_irls(kfs, P, odo, planes, obs, closure_idx, self.noise_pgo, self.s_odo_t, self.s_odo_r, k,
+                                     self.huber_k, self.chi2, self.max_dt, self.max_dr, self.max_nfev)
+        else:
+            res = PG.solve_ours(kfs, P, odo, planes, obs, closure_idx, self.noise, self.s_odo_t, self.s_odo_r, k,
+                                self.huber_k, self.chi2, self.max_dt, self.max_dr, self.max_nfev)
+        if self.pgo_robust == "irls_factor":
+            dset = set(res.get("dropped", []))
+            self._w("pgo_poses.jsonl", dict(
+                frame=int(k), status=res["status"], solve_s=res.get("solve_s"),
+                before={int(q): P[q].tolist() for q in kfs},
+                after={int(q): res["poses"][q].tolist() for q in kfs} if res.get("poses") else None,
+                closures=[dict(anchor=int(obs[i][0]), kf=int(obs[i][1]), tier=2 if obs[i][5].startswith("t2:") else 1,
+                               plane=int(obs[i][5][3:]) if obs[i][5].startswith("t2:") else None, dropped=i in dset,
+                               e2=res.get("closure_e2", {}).get(i), irls_w=res.get("closure_w", {}).get(i))
+                          for i in closure_idx]))
         dropped = set(res.get("dropped", []))
         self.stats["closure_dropped"] += len(dropped)
         n_acc = 0

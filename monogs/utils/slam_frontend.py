@@ -68,6 +68,7 @@ class FrontEnd(mp.Process):
         self.ref_rel = {}
         self.pw = None
         self.requested_pgo = 0
+        self.kf_force_every = int(self.config["Training"].get("kf_force_every", 0) or 0)
 
         # PLAN MONOGS-E1C §5.2 (2): E1c objects; nothing is created when PlaneTracking.enable is false
         pt = self.config.get("PlaneTracking", {}) or {}
@@ -611,6 +612,9 @@ class FrontEnd(mp.Process):
                 if self.single_thread:
                     create_kf = check_time and create_kf
                 kf_reason = "mono" if create_kf else None
+                if (not create_kf and self.kf_force_every > 0 and check_time
+                        and cur_frame_idx - last_keyframe_idx >= self.kf_force_every):
+                    create_kf, kf_reason = True, "force"   # PLAN MONOGS-PW2 §2.6 (base_kf only; default off)
                 if (self.pw is not None and not create_kf and check_time
                         and len(self.current_window) >= self.window_size):
                     kf_reason = self.pw.extra_kf_reason(self, cur_frame_idx)   # PLAN MONOGS-PW §2.4: T1 / T2 (OR)

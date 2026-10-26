@@ -216,6 +216,7 @@ if __name__ == "__main__":
     parser.add_argument("--method", type=str, default="base", choices=repro.METHODS)
     parser.add_argument("--stiffness-every", type=int, default=0)  # PLAN MONOGS-PW §2.6: 0 = off (calibration runs)
     parser.add_argument("--pgo-force-every", type=int, default=0)  # PLAN MONOGS-PW §7.2 smoke: force PGO every N keyframes
+    parser.add_argument("--kf-force-every", type=int, default=0)  # PLAN MONOGS-PW2 §2.6: base_kf
 
     args = parser.parse_args(sys.argv[1:])
 

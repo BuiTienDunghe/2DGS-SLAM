@@ -256,3 +256,201 @@ def solve_sgs(kfs, poses, odo, edges, s_odo_t, s_odo_r, k, max_dt=1.0, max_dr=30
         return out
     out.update(status="applied", poses=P, planes={})
     return out
+
+
+# ============================================================================ PLAN MONOGS-PW2 §2.4 (appended)
+# Vectorised residuals (same maths as Graph.residuals) and IRLS Huber on the norm of each plane factor
+# (odometry without kernel). Graph / solve_ours above stay as in R1 (PGO.robust: scipy_huber).
+
+
+def _skew_b(v):
+    z = np.zeros(len(v))
+    return np.stack([np.stack([z, -v[:, 2], v[:, 1]], 1), np.stack([v[:, 2], z, -v[:, 0]], 1),
+                     np.stack([-v[:, 1], v[:, 0], z], 1)], 1)
+
+
+def _coef(a):
+    small = a < 1e-6
+    a_ = np.where(small, 1.0, a)
+    A = np.where(small, 1 - a ** 2 / 6, np.sin(a_) / a_)
+    B = np.where(small, 0.5 - a ** 2 / 24, (1 - np.cos(a_)) / a_ ** 2)
+    C = np.where(small, 1.0 / 6 - a ** 2 / 120, (a_ - np.sin(a_)) / a_ ** 3)
+    return A, B, C
+
+
+def se3_exp_b(xi):
+    """Batched SE3_exp (MonoGS order [rho, theta]) -> R (K,3,3), t (K,3)."""
+    th = xi[:, 3:]
+    a = np.linalg.norm(th, axis=1)
+    W = _skew_b(th)
+    W2 = W @ W
+    A, B, C = _coef(a)
+    I = np.eye(3)[None]
+    R = I + A[:, None, None] * W + B[:, None, None] * W2
+    V = I + B[:, None, None] * W + C[:, None, None] * W2
+    return R, np.einsum("kij,kj->ki", V, xi[:, :3])
+
+
+def se3_log_b(R, t):
+    """Batched se3_log of (R, t) -> (K, 6) [rho, theta]; angles near pi fall back to the scalar version."""
+    c = np.clip((np.einsum("kii->k", R) - 1) / 2, -1.0, 1.0)
+    a = np.arccos(c)
+    w = np.stack([R[:, 2, 1] - R[:, 1, 2], R[:, 0, 2] - R[:, 2, 0], R[:, 1, 0] - R[:, 0, 1]], 1)
+    small = a < 1e-6
+    s = np.where(small, 1.0, np.sin(np.where(small, 1.0, a)))
+    th = np.where(small[:, None], 0.5 * w, (a / (2 * s))[:, None] * w)
+    far = np.pi - a < 1e-4
+    for i in np.nonzero(far)[0]:
+        th[i] = so3_log(R[i])
+    W = _skew_b(th)
+    A, B, C = _coef(np.linalg.norm(th, axis=1))
+    V = np.eye(3)[None] + B[:, None, None] * W + C[:, None, None] * (W @ W)
+    rho = np.linalg.solve(V, t[..., None])[..., 0]
+    return np.concatenate([rho, th], 1)
+
+
+class GraphVec(Graph):
+    """Same graph and parametrisation as Graph, residuals computed with numpy batches; plane-factor rows can be
+    scaled by per-factor IRLS weights (sqrt(w))."""
+
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        kix = {k: i for i, k in enumerate(self.kfs)}
+        self.kix = kix
+        self.var_mask = np.array([k in self.pi for k in self.kfs])
+        self.var_pos = np.array([self.pi.get(k, -1) for k in self.kfs])
+        R0 = np.stack([self.P0[k][:3, :3] for k in self.kfs])
+        t0 = np.stack([self.P0[k][:3, 3] for k in self.kfs])
+        self.R0, self.t0 = R0, t0
+        ed = list(self.odo) + list(self.edges)
+        self.n_odo_rows = len(ed)
+        self.oi = np.array([kix[e[0]] for e in ed], dtype=int)
+        self.oj = np.array([kix[e[1]] for e in ed], dtype=int)
+        Minv = np.stack([inv(e[2]) for e in ed]) if ed else np.zeros((0, 4, 4))
+        self.MRi, self.Mti = Minv[:, :3, :3], Minv[:, :3, 3]
+        self.w6 = np.array([self.st] * 3 + [self.sr] * 3)
+        self._set_obs(self.obs)
+        self.n0 = np.stack([self.L0[a][0] for a in self.aids]) if self.aids else np.zeros((0, 3))
+        self.d0 = np.array([self.L0[a][1] for a in self.aids])
+        self.Bs = np.stack([self.B[a] for a in self.aids]) if self.aids else np.zeros((0, 3, 2))
+        self.irls_w = np.ones(len(self.obs))
+
+    def _set_obs(self, obs):
+        self.obs = obs
+        self.pk = np.array([self.kix[o[1]] for o in obs], dtype=int)
+        self.pa = np.array([self.ai[o[0]] for o in obs], dtype=int)
+        self.pm = np.stack([np.asarray(o[2], dtype=np.float64) for o in obs]) if obs else np.zeros((0, 3))
+        self.pd = np.array([float(o[3]) for o in obs])
+        if obs and self.noise is not None:
+            self.ps = np.stack([np.array([self.noise.sn] * 3 + [self.noise.sd(o[4])]) for o in obs])
+        else:
+            self.ps = np.ones((len(obs), 4))
+
+    def poses(self, x):
+        R, t = self.R0.copy(), self.t0.copy()
+        if self.var:
+            xi = x[:self.n6].reshape(-1, 6)
+            Re, te = se3_exp_b(xi[self.var_pos[self.var_mask]])
+            R[self.var_mask] = Re @ self.R0[self.var_mask]
+            t[self.var_mask] = np.einsum("kij,kj->ki", Re, self.t0[self.var_mask]) + te
+        return R, t
+
+    def planes(self, x):
+        if not self.aids:
+            return self.n0, self.d0
+        y = x[self.n6:].reshape(-1, 3)
+        n = self.n0 + np.einsum("aij,aj->ai", self.Bs, y[:, :2])
+        return n / np.linalg.norm(n, axis=1, keepdims=True), self.d0 + y[:, 2]
+
+    def plane_res(self, x):
+        R, t = self.poses(x)
+        n, d = self.planes(x)
+        Rn = np.einsum("kij,kj->ki", R[self.pk], n[self.pa])
+        r = np.concatenate([self.pm - Rn, (self.pd - (d[self.pa] - np.einsum("ki,ki->k", Rn, t[self.pk])))[:, None]], 1)
+        return r / self.ps
+
+    def odo_res(self, x):
+        if self.n_odo_rows == 0:
+            return np.zeros((0, 6))
+        R, t = self.poses(x)
+        # E = P_j P_i^-1 M^-1
+        Ri, ti = R[self.oi], t[self.oi]
+        Rj, tj = R[self.oj], t[self.oj]
+        Rij = Rj @ np.transpose(Ri, (0, 2, 1))
+        tij = tj - np.einsum("kij,kj->ki", Rij, ti)
+        RE = Rij @ self.MRi
+        tE = np.einsum("kij,kj->ki", Rij, self.Mti) + tij
+        return se3_log_b(RE, tE) / self.w6
+
+    def residuals(self, x, obs=None):
+        if obs is not None and obs is not self.obs:
+            self._set_obs(obs)
+            self.irls_w = np.ones(len(obs))
+        r_o = self.odo_res(x).ravel()
+        r_p = (self.plane_res(x) * np.sqrt(self.irls_w)[:, None]).ravel() if len(self.obs) else np.zeros(0)
+        return np.concatenate([r_o, r_p])
+
+    def factor_e2_all(self, x):
+        r = self.plane_res(x)
+        return np.einsum("ki,ki->k", r, r)
+
+
+def solve_ours_irls(kfs, poses, odo, planes, obs, closure_idx, noise, s_odo_t, s_odo_r, k, huber_k=1.345,
+                    chi2=CHI2_3, max_dt=1.0, max_dr=30.0, max_nfev=100, outer=3):
+    """PLAN MONOGS-PW2 §2.4: IRLS Huber on the norm of each plane factor (w = min(1, k/||r||), rows scaled by
+    sqrt(w), least_squares with loss linear), 3 outer iterations, odometry without kernel; chi2 test of the closure
+    factors without kernel; rejected ones removed and the graph solved again from the initial values."""
+    import time as _t
+    t0 = _t.perf_counter()
+
+    def run(obs_):
+        g = GraphVec(kfs, poses, odo, planes, obs_, [], noise, s_odo_t, s_odo_r)
+        x = np.zeros(g.n6 + 3 * len(g.aids))
+        S = g.sparsity(obs_)
+        res = None
+        for _ in range(outer):
+            if len(obs_):
+                nr = np.sqrt(g.factor_e2_all(x))
+                g.irls_w = np.minimum(1.0, huber_k / np.maximum(nr, 1e-12))
+            try:
+                res = least_squares(g.residuals, x, jac_sparsity=S, method="trf", max_nfev=max_nfev, x_scale="jac")
+            except Exception as e:  # noqa: BLE001
+                return g, None, str(e)
+            x = res.x
+        return g, res, None
+
+    out = dict(n_nodes=len(kfs), n_odo=len(odo), n_plane=len(obs), n_closure=len(closure_idx), dropped=[], resolved=False)
+    g, res, err = run(obs)
+    if res is None or not np.all(np.isfinite(res.x)):
+        out.update(status="aborted", reason=f"solver: {err}")
+        return out
+    e2 = g.factor_e2_all(res.x) if len(obs) else np.zeros(0)
+    w_first = g.irls_w.copy()
+    bad = [i for i in closure_idx if e2[i] > chi2]
+    out["closure_e2"] = {int(i): float(e2[i]) for i in closure_idx}
+    out["closure_w"] = {int(i): float(w_first[i]) for i in closure_idx}
+    if bad:
+        keep_idx = [i for i in range(len(obs)) if i not in set(bad)]
+        g, res, err = run([obs[i] for i in keep_idx])
+        out["resolved"] = True
+        out["dropped"] = bad
+        if res is None or not np.all(np.isfinite(res.x)):
+            out.update(status="aborted", reason=f"solver (2nd): {err}")
+            return out
+    R, t = g.poses(res.x)
+    n, d = g.planes(res.x)
+    P = {}
+    for i, q in enumerate(kfs):
+        T = np.eye(4)
+        T[:3, :3], T[:3, 3] = R[i], t[i]
+        P[q] = T
+    L = {a: (n[i], float(d[i])) for i, a in enumerate(g.aids)}
+    dt, dr = pose_change(poses[k], P[k])
+    out.update(max_kf_shift_m=max(pose_change(poses[q], P[q])[0] for q in kfs),
+               max_kf_rot_deg=max(pose_change(poses[q], P[q])[1] for q in kfs), k_shift_m=dt, k_rot_deg=dr,
+               nfev=int(res.nfev), solve_s=_t.perf_counter() - t0)
+    if dt > max_dt or dr > max_dr:
+        out.update(status="aborted", reason=f"keyframe {k} moved {dt:.3f} m / {dr:.1f} deg")
+        return out
+    out.update(status="applied", poses=P, planes=L)
+    return out
