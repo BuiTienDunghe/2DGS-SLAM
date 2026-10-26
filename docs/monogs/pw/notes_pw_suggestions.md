@@ -1,0 +1,7 @@
+**Gợi ý cho lượt sau** (rút từ log; chưa thử, không chỉnh trong lượt này):
+1. **Thang của kernel và inlier phải gồm sai số pose tương đối, không chỉ nhiễu đo.** Cặp đúng có e trung vị khoảng 1,4–3, cộng một đuôi 3–5 ở mọi khoảng độ sâu. Cách đơn giản nhất mà vẫn đo được: hiệu chỉnh σ_n, σ_d bằng **pose ước lượng** của một run `full_nopgo` trên validation, đúng như plan đã định cho σ_odo. Kết quả sẽ là một bộ σ "hiệu dụng" lớn hơn.
+2. **T1 sinh quá nhiều keyframe** (57 trên snt_far, 15–20 trên st_far): do mặt lớn không có cặp inlier active, mà nguyên nhân lại chính là gợi ý 1. Sửa gợi ý 1 trước rồi đo lại T1.
+3. **Ứng viên tạo / xóa quá nhiều** (snt_far: 218 tạo, 189 xóa, 4 kích hoạt). Cũng là hệ quả của gợi ý 1.
+4. **κ:** hai chuỗi validation chênh hơn 40 lần, nên một κ chung không đúng ở cả hai. Muốn giữ 1b thì cần κ theo cảnh, ví dụ ước lượng κ khi chạy từ độ cứng render, hoặc đơn vị thông tin khác cho render. Phần này cần thiết kế lại, không phải chỉnh số.
+5. **PGO chậm:** trung bình khoảng 95 s mỗi lần trên snt_far, vì scipy dựng lại toàn bộ đồ thị với Jacobian sai phân. Nên dùng Jacobian giải tích hoặc GTSAM `CustomFactor`, và giới hạn đồ thị (ví dụ chỉ keyframe có quan sát mặt phẳng).
+6. **Giật trên snt:** các frame giật nhất của `full` thường là frame khởi tạo bằng plane khi chỉ còn ít cặp active, hoặc frame ngay sau PGO. Trên E1c, frame có lật ID giật gấp 1,8–2,9 lần (DIAG_E1C).

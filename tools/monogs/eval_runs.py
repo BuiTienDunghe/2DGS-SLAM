@@ -62,9 +62,9 @@ def near(a, b):
     return abs(a["d_w"] - db) < DD
 
 
-def plane_metrics(run):
-    fr = jsonl(os.path.join(run, "e1c_frames.jsonl"))
-    an = jsonl(os.path.join(run, "anchors.jsonl"))
+def plane_metrics(run, max_frame=None):
+    fr = [r for r in jsonl(os.path.join(run, "e1c_frames.jsonl")) if max_frame is None or r["frame"] < max_frame]
+    an = [r for r in jsonl(os.path.join(run, "anchors.jsonl")) if max_frame is None or r["frame"] < max_frame]
     if not fr:
         return None
     trk = [r for r in fr if r["init_source"] != "gt"]
@@ -110,11 +110,15 @@ def plane_metrics(run):
     return out
 
 
-def run_metrics(run):
+def run_metrics(run, max_frame=None):
+    """max_frame: keep frames < N only (PLAN MONOGS-PW 7.3: cut a full-sequence run to the range of a shorter one)."""
     m = dict(run=run)
     ts, est = load_tum(os.path.join(run, "traj_all.txt"))
     _, gt = load_tum(os.path.join(run, "traj_gt_all.txt"))
     kf = [int(x) for x in open(os.path.join(run, "kf_indices.txt")).read().split()]
+    if max_frame is not None:
+        est, gt, ts = est[:max_frame], gt[:max_frame], ts[:max_frame]
+        kf = [k for k in kf if k < max_frame]
     tim = json.load(open(os.path.join(run, "timing.json")))
     off = 0
     ids = list(range(len(est)))                       # frames are 0..N-1 in the run (after --range)
@@ -139,7 +143,8 @@ def run_metrics(run):
         q = os.path.join(run, p)
         if os.path.exists(q):
             m["monogs_ate_kf_cm"] = 100 * json.load(open(q))["rmse"]
-    m["plane"] = plane_metrics(run)
+    m["plane"] = plane_metrics(run, max_frame)
+    m["max_frame"] = max_frame
     m["kf_indices"] = kf
     m["repro"] = tim.get("repro")
     return m
@@ -169,11 +174,12 @@ def main():
     ap.add_argument("runs", nargs="*")
     ap.add_argument("--pair", nargs=2, default=None)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--max-frame", type=int, default=None)
     a = ap.parse_args()
     if a.pair:
         res = pair_metrics(*a.pair)
     else:
-        res = {r: run_metrics(r) for r in a.runs if os.path.exists(os.path.join(r, "traj_all.txt"))}
+        res = {r: run_metrics(r, a.max_frame) for r in a.runs if os.path.exists(os.path.join(r, "traj_all.txt"))}
     json.dump(res, open(a.out, "w"), indent=1)
     show = res if a.pair else {k: {kk: vv for kk, vv in v.items() if kk not in ("unaligned_cm", "kf_indices")} for k, v in res.items()}
     print(json.dumps(show, indent=1)[:4000])

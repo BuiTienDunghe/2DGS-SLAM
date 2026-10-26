@@ -1,0 +1,325 @@
+{
+ "snt_far": {
+  "classes": {
+   "new": 11,
+   "R1": 4,
+   "R2": 4
+  },
+  "n_new_anchors": 19,
+  "pct_mismatch": 37.282020444978954,
+  "id_simultaneous": 49,
+  "id_flip": 378,
+  "rpe_flip": [
+   1.1679814491150546,
+   0.6606075230638551,
+   307
+  ],
+  "rpe_plane_init": [
+   0.801256171760846,
+   0.9246975457292231,
+   424
+  ],
+  "detail": [
+   {
+    "anchor": 4,
+    "kf": 39,
+    "label": 11,
+    "cls": "new"
+   },
+   {
+    "anchor": 5,
+    "kf": 58,
+    "label": 3,
+    "cls": "R1"
+   },
+   {
+    "anchor": 6,
+    "kf": 176,
+    "label": 22,
+    "cls": "new"
+   },
+   {
+    "anchor": 7,
+    "kf": 251,
+    "label": 3,
+    "cls": "new"
+   },
+   {
+    "anchor": 8,
+    "kf": 284,
+    "label": 33,
+    "cls": "new"
+   },
+   {
+    "anchor": 9,
+    "kf": 296,
+    "label": 37,
+    "cls": "new"
+   },
+   {
+    "anchor": 10,
+    "kf": 313,
+    "label": 40,
+    "cls": "new"
+   },
+   {
+    "anchor": 11,
+    "kf": 349,
+    "label": 5,
+    "cls": "R1"
+   },
+   {
+    "anchor": 12,
+    "kf": 367,
+    "label": 36,
+    "cls": "R2"
+   },
+   {
+    "anchor": 13,
+    "kf": 383,
+    "label": 43,
+    "cls": "R1"
+   },
+   {
+    "anchor": 14,
+    "kf": 402,
+    "label": 49,
+    "cls": "new"
+   },
+   {
+    "anchor": 15,
+    "kf": 402,
+    "label": 31,
+    "cls": "new"
+   },
+   {
+    "anchor": 16,
+    "kf": 437,
+    "label": 44,
+    "cls": "new"
+   },
+   {
+    "anchor": 17,
+    "kf": 468,
+    "label": 1,
+    "cls": "R1"
+   },
+   {
+    "anchor": 18,
+    "kf": 473,
+    "label": 11,
+    "cls": "R2"
+   },
+   {
+    "anchor": 19,
+    "kf": 494,
+    "label": 61,
+    "cls": "new"
+   },
+   {
+    "anchor": 20,
+    "kf": 494,
+    "label": 52,
+    "cls": "new"
+   },
+   {
+    "anchor": 21,
+    "kf": 585,
+    "label": 1,
+    "cls": "R2"
+   },
+   {
+    "anchor": 22,
+    "kf": 656,
+    "label": 27,
+    "cls": "R2"
+   }
+  ]
+ },
+ "snt_near": {
+  "classes": {
+   "new": 20,
+   "R2": 4,
+   "R1": 1,
+   "R3": 2
+  },
+  "n_new_anchors": 27,
+  "pct_mismatch": 34.185303514377,
+  "id_simultaneous": 96,
+  "id_flip": 261,
+  "rpe_flip": [
+   2.38302439418588,
+   0.8120959118704582,
+   204
+  ],
+  "rpe_plane_init": [
+   1.2136995038346956,
+   1.0583975875416862,
+   384
+  ],
+  "detail": [
+   {
+    "anchor": 2,
+    "kf": 64,
+    "label": 9,
+    "cls": "new"
+   },
+   {
+    "anchor": 3,
+    "kf": 162,
+    "label": 16,
+    "cls": "new"
+   },
+   {
+    "anchor": 4,
+    "kf": 245,
+    "label": 23,
+    "cls": "new"
+   },
+   {
+    "anchor": 5,
+    "kf": 258,
+    "label": 13,
+    "cls": "new"
+   },
+   {
+    "anchor": 6,
+    "kf": 273,
+    "label": 26,
+    "cls": "new"
+   },
+   {
+    "anchor": 7,
+    "kf": 398,
+    "label": 16,
+    "cls": "R2"
+   },
+   {
+    "anchor": 8,
+    "kf": 425,
+    "label": 36,
+    "cls": "new"
+   },
+   {
+    "anchor": 9,
+    "kf": 431,
+    "label": 30,
+    "cls": "new"
+   },
+   {
+    "anchor": 10,
+    "kf": 431,
+    "label": 39,
+    "cls": "new"
+   },
+   {
+    "anchor": 11,
+    "kf": 436,
+    "label": 40,
+    "cls": "new"
+   },
+   {
+    "anchor": 12,
+    "kf": 486,
+    "label": 46,
+    "cls": "new"
+   },
+   {
+    "anchor": 13,
+    "kf": 486,
+    "label": 42,
+    "cls": "R1"
+   },
+   {
+    "anchor": 14,
+    "kf": 582,
+    "label": 4,
+    "cls": "new"
+   },
+   {
+    "anchor": 15,
+    "kf": 604,
+    "label": 13,
+    "cls": "R2"
+   },
+   {
+    "anchor": 16,
+    "kf": 640,
+    "label": 55,
+    "cls": "new"
+   },
+   {
+    "anchor": 17,
+    "kf": 653,
+    "label": 16,
+    "cls": "R3"
+   },
+   {
+    "anchor": 18,
+    "kf": 659,
+    "label": 30,
+    "cls": "new"
+   },
+   {
+    "anchor": 19,
+    "kf": 664,
+    "label": 62,
+    "cls": "new"
+   },
+   {
+    "anchor": 20,
+    "kf": 671,
+    "label": 65,
+    "cls": "new"
+   },
+   {
+    "anchor": 21,
+    "kf": 700,
+    "label": 2,
+    "cls": "R2"
+   },
+   {
+    "anchor": 22,
+    "kf": 730,
+    "label": 20,
+    "cls": "R3"
+   },
+   {
+    "anchor": 23,
+    "kf": 757,
+    "label": 20,
+    "cls": "R2"
+   },
+   {
+    "anchor": 24,
+    "kf": 770,
+    "label": 30,
+    "cls": "new"
+   },
+   {
+    "anchor": 25,
+    "kf": 794,
+    "label": 56,
+    "cls": "new"
+   },
+   {
+    "anchor": 26,
+    "kf": 820,
+    "label": 77,
+    "cls": "new"
+   },
+   {
+    "anchor": 27,
+    "kf": 869,
+    "label": 86,
+    "cls": "new"
+   },
+   {
+    "anchor": 28,
+    "kf": 930,
+    "label": 65,
+    "cls": "new"
+   }
+  ]
+ }
+}
