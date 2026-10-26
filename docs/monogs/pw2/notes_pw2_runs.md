@@ -1,0 +1,1 @@
+Không bỏ run nào. N của `base_kf` = round(789 / 49) = 16 (789 frame, 49 keyframe của run 1); run có 51 keyframe. Run `snt_near/pw2` ghi đủ kết quả rồi treo lúc thoát (lỗi đã gặp ở các lượt trước); watchdog 10 phút dừng nó (rc = 143). Kết quả đầy đủ.

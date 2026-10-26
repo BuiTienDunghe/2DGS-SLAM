@@ -1,0 +1,6 @@
+**Gợi ý (rút từ log; chưa thử):**
+1. **Tách lợi của "BA mặt phẳng" khỏi closure.** Lợi lớn nhất của lượt này đến từ việc tối ưu lại đồ thị pose + mặt phẳng, không từ closure. Lượt sau nên chạy PGO định kỳ (`force_every_kf`), không cần closure, như một method riêng, và so với `pw2_nopgo` trên nhiều seed. Cũng là bước đầu của "plane trong local BA".
+2. **Closure tier 2 hiện chỉ sinh ứng viên sai** (5/5). Cổng rộng 15° / 30 cm với điều kiện "đúng một anchor cũ" không phân biệt được mặt song song. Lượt sau có thể bỏ tier 2, hoặc chỉ nhận khi có ≥ 2 mặt không song song cùng khớp (gần với điều kiện của `sgs`).
+3. **Ghép nhầm tăng lại khi σ_eff lớn.** Kiểm offline cho thấy 35–55 % anchor sai nhãn trong cổng qua kernel. Một σ_eff chung cho mọi khoảng cách frame quá rộng với cặp gần, quá hẹp với cặp xa (bảng theo khoảng cách frame trong `CALIB_PW2.md`). Hướng: σ_eff theo khoảng cách keyframe kể từ lúc tạo anchor (đo được trên validation, không phải mô hình drift).
+4. **st_far:** không có closure nên không có PGO. Lợi của plane ở cảnh có texture vẫn chưa có; E1c vẫn tốt nhất (1,16 cm).
+5. **Thời gian:** tracking của `pw2` chậm hơn E1c (660–965 so với 555 ms/frame), chủ yếu do đo độ cứng ở mỗi keyframe (12 render) và tính e cho mọi anchor qua cổng trong `e_first`.

@@ -151,13 +151,14 @@ def decisions(M):
         lines.append(f"  - {s}: RPE Δ1 (hiệu chỉnh) pw2 {f(rp, 3)}, e1c {f(g(e, 'rpe_d1_cm'), 3)}, base {f(g(b, 'rpe_d1_cm'), 3)} cm.")
     out += ["- **D5 (giật, chỉ báo):**"] + lines
     if R["D1"] and R["D2"] and R["D3"] and R.get("D4"):
-        concl = "**Tiếp tục**: lượt sau thêm plane vào local BA, fr1/room đủ chuỗi, nhiều seed."
+        concl = "Tiếp tục: lượt sau thêm plane vào local BA, fr1/room đủ chuỗi, nhiều seed."
     elif not R["D1"]:
-        concl = "**Plane world vẫn \"đói\"** (D1 không đạt): xem phân phối e của cặp đúng nhãn so với σ_eff ở mục 7; không kết luận về D2–D4."
+        concl = ("D1 không đạt → theo bảng mục 8: báo phân phối e của cặp đúng nhãn và nguyên nhân, không kết luận về D2–D4 "
+                 "(D1 trượt ở điều kiện nào: xem các dòng D1 bên dưới và phần diễn giải)")
     elif R["D3"] and not R["D2"]:
-        concl = "**Chuyển hướng**: mặt phẳng là mốc tầm dài (PGO + local BA), plane nhẹ ở tracking."
+        concl = "Chuyển hướng: mặt phẳng là mốc tầm dài (PGO + local BA), plane nhẹ ở tracking."
     elif not R["D2"] and not R["D3"]:
-        concl = "**Dừng PW**, giữ E1c, tìm hướng khác."
+        concl = "Dừng PW, giữ E1c, tìm hướng khác."
     else:
         concl = "Kết quả không rơi đúng vào một dòng của bảng mục 8 (D1, D2 đạt nhưng D3 hoặc D4 không đạt): xem diễn giải."
     return out, concl, R
@@ -190,7 +191,7 @@ def main():
          "Sinh bằng `tools/monogs/pw2/make_report_pw2.py`. Nhánh `exp/monogs-pw2`. 1 seed (0); A **tốt hơn** B khi A ≤ 0,7·B, **tệ hơn** khi "
          "A ≥ 1,3·B. Run base / e1c của snt_far, snt_near lấy từ `results_monogs/B` (snt_near cắt về frame 0–700); st_far base / e1c và `full` "
          "(R1) lấy từ `results_monogs/PW`.\n",
-         "## 1. Kết luận lượt\n", f"**{concl}**\n"] + dec + ["", note("notes_pw2_summary.md"),
+         "## 1. Kết luận lượt\n", f"**Kết luận (luật mục 8):** {concl}\n"] + dec + ["", note("notes_pw2_summary.md"),
          "## 2. Hiệu chỉnh (chi tiết `pw2/CALIB_PW2.md`)\n", "| Thang | σ_n | σ_d(z) |", "|---|---|---|",
          f"| σ_pgo | {f(np.degrees(n['sigma_n']), 3)}° | {f(100 * n['sigma_d_a'], 3)} + {f(100 * n['sigma_d_b'], 4)}·z² cm |",
          f"| σ_eff | {f(np.degrees(n['sigma_eff_n']), 3)}° | {f(100 * n['sigma_eff_d_a'], 3)} + {f(100 * n['sigma_eff_d_b'], 4)}·z² cm |",
