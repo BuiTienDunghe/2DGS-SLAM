@@ -1,0 +1,11 @@
+Noise:
+  source: tools/monogs/pw/calib.py on the 4 fr3 *_validation sequences (planes) and
+    the two base calibration runs (kappa, odometry)
+  sigma_n: 0.0041907774738404934
+  sigma_d_a: 0.00760616476617554
+  sigma_d_b: 4.204491930675162e-05
+  sigma_odo_t: 0.03957291009261158
+  sigma_odo_r: 0.013366797603670563
+  merge_deg: 2.5098995228020704
+  merge_m: 0.03915592831116382
+  kappa: 2915.655782860698

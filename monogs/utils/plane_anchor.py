@@ -448,3 +448,334 @@ class PlaneAnchorMap:
             a.samples_w = torch.from_numpy(_even_subsample(np.concatenate([a.samples_w.numpy(), X_w]), MAX_SAMPLES))
             a.n_obs_kf += 1
             a.active = (a.n_obs_kf >= self.activate_after_kf) or (a.created_kf == self.first_kf)
+
+
+# ============================================================================ PLAN MONOGS-PW (appended; E1c above unchanged)
+# Plane world: nn matching + robust kernel (part 3), anchors attached to their creator keyframe (part 2), closure
+# candidates and post-PGO merge (part 4). Only used when PlaneTracking.pw is true (methods full*, sgs).
+
+
+class NoiseModel:
+    """Plane measurement noise (PLAN MONOGS-PW section 4): sigma_n (rad), sigma_d(z) = a + b z^2 (m)."""
+
+    def __init__(self, sigma_n, a, b):
+        self.sn, self.a, self.b = float(sigma_n), float(a), float(b)
+
+    def sd(self, z):
+        return self.a + self.b * np.square(z)
+
+
+def plane_z(p):
+    """Mean depth of the plane's points (camera frame), cached on the PlaneMeas."""
+    if getattr(p, "z", None) is not None:
+        return float(p.z)
+    z = float(np.mean(p.pts_c[:, 2])) if p.pts_c is not None and len(p.pts_c) else float(p.d)
+    p.z = z
+    return z
+
+
+def whitened_e2(m, d_meas, z, n_w, d_w, T_cw, noise):
+    """e^2 = |m - R n_w|^2 / sigma_n^2 + (d_meas - (d_w - (R n_w).t))^2 / sigma_d(z)^2 (the E1c residual)."""
+    T = _to_np(T_cw)
+    R, t = T[:3, :3], T[:3, 3]
+    Rn = R @ _to_np(n_w)
+    r_n = _to_np(m) - Rn
+    r_d = float(d_meas) - (float(d_w) - float(Rn @ t))
+    return float(r_n @ r_n) / noise.sn ** 2 + r_d ** 2 / noise.sd(z) ** 2
+
+
+def robust_weight(e, c=3.0):
+    """Geman-McClure: w(e) = 1 / (1 + e^2/c^2)^2."""
+    return 1.0 / (1.0 + (np.asarray(e, dtype=np.float64) ** 2) / c ** 2) ** 2
+
+
+def pw_loss_ctx(planes, act_pairs, anchors, noise, device, dtype, sigma_n_e1c, sigma_d_e1c):
+    """Per-frame tensors for the plane loss of the PW methods (robust weights / information scale)."""
+    if not act_pairs:
+        return None
+    w = torch.tensor([float(planes[pi].n_px) for pi, _ in act_pairs], dtype=torch.float64)
+    z = np.array([plane_z(planes[pi]) for pi, _ in act_pairs])
+    return dict(
+        m=torch.stack([planes[pi].n for pi, _ in act_pairs]).to(device=device, dtype=dtype),
+        n_w=torch.stack([anchors[aid].n_w for _, aid in act_pairs]).to(device=device, dtype=dtype),
+        d_meas=torch.tensor([planes[pi].d for pi, _ in act_pairs], dtype=dtype, device=device),
+        d_w=torch.tensor([anchors[aid].d_w for _, aid in act_pairs], dtype=dtype, device=device),
+        w=(w / w.sum()).to(device=device, dtype=dtype),
+        inv_sn2_e1c=1.0 / sigma_n_e1c ** 2, inv_sd2_e1c=1.0 / sigma_d_e1c ** 2,
+        inv_sn2=1.0 / noise.sn ** 2,
+        inv_sd2=torch.tensor(1.0 / noise.sd(z) ** 2, dtype=dtype, device=device),
+        pairs=list(act_pairs),
+    )
+
+
+def pw_plane_loss(T_cw, ctx, robust, info, kappa, c=3.0):
+    """robust: per-pair Geman-McClure weight on the calibrated e (detached). info (1b): (1/kappa) sum w 0.5 e^2,
+    no pixel normalisation, no lambda_p. Otherwise the E1c loss (pixel weights, E1c sigmas) times the robust weight.
+    Returns (loss, e2 detached)."""
+    R, t = T_cw[:3, :3], T_cw[:3, 3]
+    Rn = ctx["n_w"] @ R.T
+    r_n2 = ((ctx["m"] - Rn) ** 2).sum(-1)
+    r_d = ctx["d_meas"] - (ctx["d_w"] - Rn @ t)
+    e2 = r_n2 * ctx["inv_sn2"] + r_d ** 2 * ctx["inv_sd2"]
+    wr = (1.0 / (1.0 + e2 / c ** 2) ** 2).detach() if robust else torch.ones_like(e2)
+    if info:
+        loss = (wr * 0.5 * e2).sum() / kappa
+    else:
+        loss = (ctx["w"] * wr * (r_n2 * ctx["inv_sn2_e1c"] + r_d ** 2 * ctx["inv_sd2_e1c"])).sum()
+    return loss, e2.detach()
+
+
+def _obs(kf, p):
+    return dict(kf=int(kf), n_c=p.n.numpy().copy(), d_c=float(p.d), n_px=int(p.n_px), z=plane_z(p), pts_c=p.pts_c)
+
+
+class PWAnchorMap(PlaneAnchorMap):
+    """Anchors of the PW methods. self.anchors holds primaries only (base-class methods keep working);
+    self.alias maps merged ids to their primary. Attached anchors (anchor_mode attach) store the creating
+    measurement in the creator keyframe camera; their world value follows the creator pose (refresh)."""
+
+    def __init__(self, cfg, K, height, width, noise):
+        super().__init__(cfg, K, height, width)
+        self.noise = noise
+        self.match_mode = cfg.get("match_mode", "nn")
+        self.anchor_mode = cfg.get("anchor_mode", "attach")
+        self.robust = bool(cfg.get("robust", True))
+        self.robust_c = float(cfg.get("robust_c", 3.0))
+        self.inlier_e = float(cfg.get("inlier_e", 3.0))
+        self.cand_max_kf = int(cfg.get("candidate_max_kf", 2))
+        self.cl_cos = float(np.cos(np.deg2rad(cfg.get("closure_gate_deg", 15))))
+        self.cl_dist = float(cfg.get("closure_gate_m", 0.30))
+        self.cl_min_gap = int(cfg.get("closure_min_kf_gap", 8))
+        self.alias = {}
+        self.kf_order = []            # keyframe ids in creation order
+        self.events = []              # pending log rows (create / delete / activate / merge)
+        self.counts = dict(create=0, delete=0, activate=0, merge=0)
+
+    # ------------------------------------------------------------------ helpers
+    def resolve(self, aid):
+        while aid in self.alias:
+            aid = self.alias[aid]
+        return aid
+
+    def _ev(self, **kw):
+        self.events.append(kw)
+
+    def kf_rank(self, kf):
+        return self.kf_order.index(kf) if kf in self.kf_order else len(self.kf_order)
+
+    def e_pair(self, p, a, T):
+        return float(np.sqrt(whitened_e2(p.n.numpy(), p.d, plane_z(p), a.n_w.numpy(), a.d_w, T, self.noise)))
+
+    def _gate(self, p, a, T, cos_min, dmax):
+        n_c, d_c = plane_w2c(a.n_w, a.d_w, T)
+        if d_c <= 0:
+            return None
+        c = float(np.clip(p.n.numpy() @ n_c, -1.0, 1.0))
+        if c < cos_min:
+            return None
+        dist = abs(p.d - d_c)
+        if dist > dmax:
+            return None
+        return np.arccos(c), dist
+
+    # ------------------------------------------------------------------ part 3: matching
+    def match_nn(self, planes, T_cw):
+        """Each measured plane picks its own anchor (many-to-one): lowest cost angle/10 deg + |dd|/10 cm among
+        primaries passing the E1c gate (no overlap); active anchors first, candidates only if no active passes."""
+        T = _to_np(T_cw)
+        pairs = []
+        for pi, p in enumerate(planes):
+            best_a = best_c = None
+            for aid, a in self.anchors.items():
+                g = self._gate(p, a, T, self.max_cos, self.max_dist)
+                if g is None:
+                    continue
+                cost = g[0] / self.max_angle + g[1] / self.max_dist
+                if a.active:
+                    if best_a is None or cost < best_a[0]:
+                        best_a = (cost, aid)
+                elif best_c is None or cost < best_c[0]:
+                    best_c = (cost, aid)
+            pick = best_a or best_c
+            if pick is not None:
+                pairs.append((pi, pick[1]))
+        return pairs
+
+    def match_any(self, planes, T_cw):
+        return self.match_nn(planes, T_cw) if self.match_mode == "nn" else self.match(planes, T_cw)
+
+    def classify(self, planes, pairs, T_cw):
+        """Per pair: (pi, aid, e, w, inlier) at pose T. Without the robust kernel (full_nomatch) every pair counts."""
+        out = []
+        for pi, aid in pairs:
+            e = self.e_pair(planes[pi], self.anchors[aid], T_cw)
+            w = float(robust_weight(e, self.robust_c))
+            out.append((pi, aid, e, w, (e <= self.inlier_e) if self.robust else True))
+        return out
+
+    def solve_pose_robust(self, planes, pairs, T_prior):
+        """E1c closed form, then drop active pairs with e > 3 at the solution and solve once more (PLAN 2.2 B)."""
+        T = self.solve_pose(planes, pairs, T_prior)
+        if T is None or not self.robust:
+            return T, 0
+        act = self.active_pairs(pairs)
+        keep = [(pi, aid) for pi, aid in act if self.e_pair(planes[pi], self.anchors[aid], T) <= self.inlier_e]
+        n_drop = len(act) - len(keep)
+        if n_drop == 0:
+            return T, 0
+        if len(keep) < 3:
+            self.last_solve_status = "robust_drop"
+            return None, n_drop
+        return self.solve_pose(planes, keep, T_prior), n_drop
+
+    # ------------------------------------------------------------------ part 2: keyframes
+    def _new(self, kf, p, T_cw, first=False):
+        n_w, d_w = plane_c2w(p.n.numpy(), p.d, T_cw)
+        Tn = _to_np(T_cw)
+        a = Anchor(id=self.next_id, n_w=torch.from_numpy(n_w / np.linalg.norm(n_w)), d_w=float(d_w),
+                   samples_w=torch.from_numpy((p.pts_c - Tn[:3, 3]) @ Tn[:3, :3]), n_obs_kf=1, active=first,
+                   created_kf=int(kf), weight=float(p.n_px))
+        a.creator_kf = int(kf)
+        a.obs_c = (p.n.numpy().copy(), float(p.d))
+        a.kf_obs = [_obs(kf, p)]
+        a.last_obs_kf = int(kf)
+        a.alias_of = None
+        self.anchors[a.id] = a
+        self.next_id += 1
+        self.counts["create"] += 1
+        self._ev(type="create", id=a.id, kf=int(kf), active=bool(first))
+        return a
+
+    def _add_obs(self, a, kf, p):
+        new_kf = not any(o["kf"] == kf for o in a.kf_obs)
+        a.kf_obs.append(_obs(kf, p))
+        if new_kf:
+            a.n_obs_kf += 1
+            a.last_obs_kf = int(kf)
+            if not a.active and a.n_obs_kf >= self.activate_after_kf:
+                a.active = True
+                self.counts["activate"] += 1
+                self._ev(type="activate", id=a.id, kf=int(kf))
+
+    def update_at_keyframe_pw(self, kf, planes, T_cw):
+        """Re-match with the tracked pose, record inlier observations, create one candidate per new surface,
+        delete unconfirmed candidates. attach: anchor values never change here; e1c mode (full_nolife): average.
+        Returns (classified pairs at T, {plane index: anchor id created or hosting})."""
+        if self.first_kf is None:
+            self.first_kf = int(kf)
+        self.kf_order.append(int(kf))
+        first = int(kf) == self.first_kf
+        T = _to_np(T_cw)
+        cls = [] if first else self.classify(planes, self.match_any(planes, T), T)
+        matched = set()
+        for pi, aid, e, w, inl in cls:
+            if not inl:
+                continue
+            a = self.anchors[aid]
+            p = planes[pi]
+            if self.anchor_mode == "e1c":           # full_nolife: E1c running average (values change)
+                n_w, d_w = plane_c2w(p.n.numpy(), p.d, T)
+                wa, wp = a.weight, float(p.n_px)
+                n_new = (wa * a.n_w.numpy() + wp * n_w) / (wa + wp)
+                a.n_w = torch.from_numpy(n_new / np.linalg.norm(n_new))
+                a.d_w = float((wa * a.d_w + wp * d_w) / (wa + wp))
+                a.weight = wa + wp
+            self._add_obs(a, kf, p)
+            matched.add(pi)
+        created = {}
+        new_here = []
+        for pi in sorted([i for i in range(len(planes)) if i not in matched], key=lambda i: -planes[i].n_px):
+            p = planes[pi]
+            if self.anchor_mode == "attach":
+                host = next((a for a in new_here if self.e_pair(p, a, T) <= self.inlier_e), None)
+                if host is not None:
+                    host.kf_obs.append(_obs(kf, p))
+                    created[pi] = host.id
+                    continue
+            a = self._new(kf, p, T, first=first)
+            new_here.append(a)
+            created[pi] = a.id
+        if self.anchor_mode == "attach":
+            rank = len(self.kf_order) - 1
+            for aid in list(self.anchors):
+                a = self.anchors[aid]
+                if not a.active and rank - self.kf_rank(a.creator_kf) >= self.cand_max_kf:
+                    del self.anchors[aid]
+                    self.counts["delete"] += 1
+                    self._ev(type="delete", id=aid, kf=int(kf))
+        return cls, created
+
+    def refresh(self, kf_poses):
+        """attach: (n_w, d_w) = plane_c2w(obs_c, T_w2c[creator]) with the current creator pose."""
+        if self.anchor_mode != "attach":
+            return
+        for a in self.anchors.values():
+            T = kf_poses.get(a.creator_kf)
+            if T is None:
+                continue
+            n_w, d_w = plane_c2w(a.obs_c[0], a.obs_c[1], T)
+            a.n_w = torch.from_numpy(n_w / np.linalg.norm(n_w))
+            a.d_w = float(d_w)
+            if self.match_mode != "nn":           # samples for the E1c overlap test (full_nomatch)
+                pts = [(o["pts_c"] - kf_poses[o["kf"]][:3, 3]) @ kf_poses[o["kf"]][:3, :3]
+                       for o in a.kf_obs if o.get("pts_c") is not None and o["kf"] in kf_poses]
+                if pts:
+                    a.samples_w = torch.from_numpy(_even_subsample(np.concatenate(pts), MAX_SAMPLES))
+
+    # ------------------------------------------------------------------ part 4: closure and merge
+    def is_old(self, a, k, window):
+        if not a.active:
+            return False
+        win = set(window) - {k}
+        if any(o["kf"] in win for o in a.kf_obs):
+            return False
+        return self.kf_rank(k) - self.kf_rank(a.last_obs_kf) >= self.cl_min_gap
+
+    def closure_candidates(self, planes, cls, T_cw, window, k):
+        """tier 1: old anchors with an inlier pair; tier 2: unmatched / non-inlier planes with exactly one old
+        anchor inside the wide gate (15 deg, 30 cm). Returns (tier1 [(pi, aid)], tier2 [(pi, aid)])."""
+        T = _to_np(T_cw)
+        old = [aid for aid, a in self.anchors.items() if self.is_old(a, k, window)]
+        t1 = [(pi, aid) for pi, aid, e, w, inl in cls if inl and aid in old]
+        inl_p = {pi for pi, aid, e, w, inl in cls if inl}
+        t2 = []
+        for pi, p in enumerate(planes):
+            if pi in inl_p:
+                continue
+            hits = [aid for aid in old if self._gate(p, self.anchors[aid], T, self.cl_cos, self.cl_dist) is not None]
+            if len(hits) == 1:
+                t2.append((pi, hits[0]))
+        return t1, t2
+
+    def make_alias(self, src, dst, reason, kf):
+        """src (newer) becomes an alias of dst (older); its observations move to dst."""
+        if src == dst or src not in self.anchors or dst not in self.anchors:
+            return
+        a, b = self.anchors[src], self.anchors[dst]
+        b.kf_obs = sorted(b.kf_obs + a.kf_obs, key=lambda o: o["kf"])
+        b.n_obs_kf = len({o["kf"] for o in b.kf_obs})
+        b.last_obs_kf = max(o["kf"] for o in b.kf_obs)
+        if not b.active:
+            b.active = True
+        a.alias_of = dst
+        self.alias[src] = dst
+        del self.anchors[src]
+        self.counts["merge"] += 1
+        self._ev(type="merge", src=int(src), dst=int(dst), reason=reason, kf=int(kf))
+
+    def merge_after_pgo(self, theta_m_deg, delta_m, kf):
+        """Primaries with the same orientation, angle <= theta_m and |dd| <= delta_m: newer -> alias of older."""
+        cmin = float(np.cos(np.deg2rad(theta_m_deg)))
+        changed = True
+        while changed:
+            changed = False
+            ids = sorted(self.anchors)
+            for i, x in enumerate(ids):
+                for y in ids[i + 1:]:
+                    a, b = self.anchors[x], self.anchors[y]
+                    if float(a.n_w.numpy() @ b.n_w.numpy()) >= cmin and abs(a.d_w - b.d_w) <= delta_m:
+                        self.make_alias(y, x, "post_pgo", kf)
+                        changed = True
+                        break
+                if changed:
+                    break

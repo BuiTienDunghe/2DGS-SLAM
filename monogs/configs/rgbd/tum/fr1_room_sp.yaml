@@ -1,0 +1,10 @@
+inherit_from: "configs/rgbd/tum/fr1_desk.yaml"
+# PLAN MONOGS-PW §3.1: fr1/room (fr1 calibration block of fr1_desk.yaml), single-thread, headless
+Dataset:
+  dataset_path: "datasets/tum/rgbd_dataset_freiburg1_room"
+  single_thread: True
+Training:
+  single_thread: True
+Results:
+  use_gui: False
+  save_results: True

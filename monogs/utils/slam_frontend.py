@@ -58,6 +58,17 @@ class FrontEnd(mp.Process):
         self.window_size = self.config["Training"]["window_size"]
         self.single_thread = self.config["Training"]["single_thread"]
 
+        # PLAN MONOGS-PW §2.6 / §3.3-3.4: stiffness log, corrected trajectory (write only, every method)
+        st = self.config.get("Stiffness", {}) or {}
+        self.stiff_every = int(self.config.get("Repro", {}).get("stiffness_every", 0) or 0)
+        self.stiff_at_kf = bool(st.get("at_keyframes", False))
+        self.stiff_dt = float(st.get("delta_t_m", 0.01))
+        self.stiff_dr = float(st.get("delta_r_deg", 0.5))
+        self._f_stiff = None
+        self.ref_rel = {}
+        self.pw = None
+        self.requested_pgo = 0
+
         # PLAN MONOGS-E1C §5.2 (2): E1c objects; nothing is created when PlaneTracking.enable is false
         pt = self.config.get("PlaneTracking", {}) or {}
         self.pt_cfg = pt
@@ -77,6 +88,9 @@ class FrontEnd(mp.Process):
             self.plane_anchors = PlaneAnchorMap(pt, self.plane_K, self.dataset.height, self.dataset.width)
             Log(f"[E1c] enabled: lambda_plane={self.pt_lambda} decouple={self.pt_decouple} "
                 f"use_init={self.pt_use_init} use_loss={self.pt_use_loss}", tag="E1c")
+            if bool(pt.get("pw", False)):  # PLAN MONOGS-PW: plane world of the methods full*, sgs
+                from utils.pw_frontend import PWFront
+                self.pw = PWFront(self)
 
     # ------------------------------------------------------------------ PLAN MONOGS-E1C §5.2 (1): pose forms
     @staticmethod
@@ -110,6 +124,26 @@ class FrontEnd(mp.Process):
                    n_anchors=len(self.plane_anchors.anchors), n_anchors_active=self.plane_anchors.n_active(), planes=pl)
         self._f_e1c.write(json.dumps(row) + "\n")
         self._f_e1c.flush()
+
+    def _log_stiffness(self, idx, viewpoint, is_kf):
+        """PLAN MONOGS-PW §2.6: c_render (6 axes) at the final pose (+ c_plane, share for PW methods); write only."""
+        if self.save_dir is None:
+            return
+        from utils.render_stiffness import render_stiffness
+        c_r, L0, ms = render_stiffness(viewpoint, self.gaussians, self.pipeline_params, self.background, self.config,
+                                       self.stiff_dt, self.stiff_dr)
+        row = dict(frame=int(idx), is_kf=bool(is_kf), c_render=c_r.tolist(), L0=L0, ms=ms,
+                   iters=getattr(self, "_track_iters", None))
+        if self.pw is not None:
+            c_p = self.pw.plane_stiffness(self.T_w2c(viewpoint), self.stiff_dt, self.stiff_dr)
+            if c_p is not None:
+                kap = self.pw.kappa
+                row["c_plane"] = c_p.tolist()
+                row["share"] = [None if cp <= 0 else float(cp / (cp + kap * cr)) for cp, cr in zip(c_p, c_r)]
+        if self._f_stiff is None:
+            self._f_stiff = open(f"{self.save_dir}/stiffness.jsonl", "w")
+        self._f_stiff.write(json.dumps(row) + "\n")
+        self._f_stiff.flush()
 
     def _e1c_log_anchors(self, idx):
         """anchors.jsonl (write only), at every keyframe."""
@@ -187,7 +221,9 @@ class FrontEnd(mp.Process):
 
         # Initialise the frame at the ground truth pose
         viewpoint.update_RT(viewpoint.R_gt, viewpoint.T_gt)
-        if self.pt_enable:  # PLAN MONOGS-E1C §5.2 (3): anchors of frame 0 (GT pose), active at once
+        if self.pw is not None:  # PLAN MONOGS-PW: anchors of frame 0 (GT pose), active at once
+            self.pw.init_first(self, cur_frame_idx, viewpoint)
+        elif self.pt_enable:  # PLAN MONOGS-E1C §5.2 (3): anchors of frame 0 (GT pose), active at once
             planes = self.plane_extractor(viewpoint.depth, self.plane_K)
             self.plane_anchors.update_at_keyframe(cur_frame_idx, planes, [], self.T_w2c(viewpoint))
             self._e1c_log_frame(cur_frame_idx, viewpoint, dict(planes=planes, pairs=[], init_source="gt",
@@ -207,7 +243,9 @@ class FrontEnd(mp.Process):
         # PLAN MONOGS-E1C §5.2 (4): planes -> match -> closed-form init -> loss context (E1c only)
         ctx, dec = None, None
         self._pinfo = None
-        if self.pt_enable:
+        if self.pw is not None:  # PLAN MONOGS-PW §2.2 A-B: nn / e1c match, robust closed-form init, loss context
+            ctx, dec = self.pw.before_tracking(self, viewpoint)
+        elif self.pt_enable:
             t0 = time.perf_counter()
             planes = self.plane_extractor(viewpoint.depth, self.plane_K)
             t1 = time.perf_counter()
@@ -281,12 +319,15 @@ class FrontEnd(mp.Process):
             g_p_t = g_p_r = None
             if ctx is not None:  # PLAN MONOGS-E1C §5.2 (5): plane term on SE3_exp(tau) @ T_w2c (same tau as render)
                 tau = torch.cat([viewpoint.cam_trans_delta, viewpoint.cam_rot_delta], 0)
-                plane_loss = self.plane_anchors.plane_loss_ctx(SE3_exp(tau) @ self.T_w2c(viewpoint), ctx)
+                if self.pw is not None:  # PLAN MONOGS-PW §2.2 C / §2.6: robust weights, E1c or information scale
+                    plane_loss = self.pw.loss(SE3_exp(tau) @ self.T_w2c(viewpoint), ctx)
+                else:
+                    plane_loss = self.pt_lambda * self.plane_anchors.plane_loss_ctx(SE3_exp(tau) @ self.T_w2c(viewpoint), ctx)
                 if dec is not None:
-                    g_p_t, g_p_r = torch.autograd.grad(self.pt_lambda * plane_loss,
+                    g_p_t, g_p_r = torch.autograd.grad(plane_loss,
                                                        [viewpoint.cam_trans_delta, viewpoint.cam_rot_delta])
                 else:
-                    loss_tracking = loss_tracking + self.pt_lambda * plane_loss
+                    loss_tracking = loss_tracking + plane_loss   # lambda_p already inside plane_loss
             loss_tracking.backward()
 
             with torch.no_grad():
@@ -489,7 +530,7 @@ class FrontEnd(mp.Process):
                     time.sleep(0.01)
                     continue
 
-                if self.single_thread and self.requested_keyframe > 0:
+                if self.single_thread and (self.requested_keyframe > 0 or self.requested_pgo > 0):
                     time.sleep(0.01)
                     continue
 
@@ -519,8 +560,14 @@ class FrontEnd(mp.Process):
                 render_pkg = self.tracking(cur_frame_idx, viewpoint)
                 torch.cuda.synchronize()
                 self.track_ms.append(1000 * (time.perf_counter() - t_trk))  # log only (excludes the 3 fps sleep)
-                if self.pt_enable:  # PLAN MONOGS-E1C §5.2 (7), write only
+                if self.pt_enable and self.pw is None:  # PLAN MONOGS-E1C §5.2 (7), write only
                     self._e1c_log_frame(cur_frame_idx, viewpoint, self._pinfo, getattr(self, "_track_iters", None))
+                # PLAN MONOGS-PW §3.4: pose relative to the latest keyframe (corrected trajectory, write only)
+                _rk = self.current_window[0]
+                self.ref_rel[cur_frame_idx] = (int(_rk), (self.T_w2c(viewpoint).double()
+                                                          @ torch.linalg.inv(self.T_w2c(self.cameras[_rk]).double())).cpu().numpy())
+                if self.pw is not None:
+                    self.pw.after_tracking(self, cur_frame_idx, viewpoint)
 
                 current_window_dict = {}
                 current_window_dict[self.current_window[0]] = self.current_window[1:]
@@ -563,6 +610,15 @@ class FrontEnd(mp.Process):
                     )
                 if self.single_thread:
                     create_kf = check_time and create_kf
+                kf_reason = "mono" if create_kf else None
+                if (self.pw is not None and not create_kf and check_time
+                        and len(self.current_window) >= self.window_size):
+                    kf_reason = self.pw.extra_kf_reason(self, cur_frame_idx)   # PLAN MONOGS-PW §2.4: T1 / T2 (OR)
+                    create_kf = kf_reason is not None
+                if self.pw is not None:
+                    self.pw.log_frame(self, cur_frame_idx, viewpoint, create_kf, kf_reason)
+                if (self.stiff_every > 0 and cur_frame_idx % self.stiff_every == 0) or (self.stiff_at_kf and create_kf):
+                    self._log_stiffness(cur_frame_idx, viewpoint, create_kf)   # PLAN MONOGS-PW §2.6, write only
                 if create_kf:
                     self.current_window, removed = self.add_to_window(
                         cur_frame_idx,
@@ -582,7 +638,9 @@ class FrontEnd(mp.Process):
                         opacity=render_pkg["opacity"],
                         init=False,
                     )
-                    if self.pt_enable and self._pinfo is not None:
+                    if self.pw is not None:
+                        self.pw.on_keyframe(self, cur_frame_idx, viewpoint)   # PLAN MONOGS-PW §2.3, §2.5
+                    elif self.pt_enable and self._pinfo is not None:
                         # PLAN MONOGS-E1C §5.2 (6): planes of this frame (not re-extracted), re-matched with the
                         # tracked pose, then the anchor update (pose before MonoGS's local BA, as E1c on 2DGS-SLAM)
                         T_kf = self.T_w2c(viewpoint)
@@ -620,10 +678,21 @@ class FrontEnd(mp.Process):
                 data = self.frontend_queue.get()
                 if data[0] == "sync_backend":
                     self.sync_backend(data)
+                    if self.pw is not None:
+                        self.pw.on_sync(self)
 
                 elif data[0] == "keyframe":
                     self.sync_backend(data)
                     self.requested_keyframe -= 1
+                    if self.pw is not None:   # PLAN MONOGS-PW §2.5: closure + PGO after the keyframe's local BA
+                        self.pw.on_sync(self)
+                        self.pw.maybe_pgo(self)
+
+                elif data[0] == "pgo":
+                    self.sync_backend(data)
+                    self.requested_pgo -= 1
+                    if self.pw is not None:
+                        self.pw.on_sync(self)
 
                 elif data[0] == "init":
                     self.sync_backend(data)

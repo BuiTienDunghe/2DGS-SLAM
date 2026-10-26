@@ -17,9 +17,43 @@ from utils.logging_utils import Log
 E1C_CONFIG = "configs/rgbd/tum/e1c.yaml"
 
 
+PW_CONFIG = "configs/rgbd/tum/pw.yaml"
+PW_CALIB = "configs/rgbd/tum/pw_calib.yaml"
+# PLAN MONOGS-PW §2.7: (match_mode, robust, anchor_mode, kf_trigger_t1, scale_mode, pgo_mode)
+PW_METHODS = {
+    "full": ("nn", True, "attach", True, "info", "ours"),
+    "full_nob": ("nn", True, "attach", True, "e1c", "ours"),
+    "full_nopgo": ("nn", True, "attach", True, "info", "none"),
+    "full_nomatch": ("e1c", False, "attach", True, "info", "ours"),
+    "full_nolife": ("nn", True, "e1c", True, "info", "ours"),
+    "full_nokf": ("nn", True, "attach", False, "info", "ours"),
+    "sgs": ("nn", True, "attach", True, "info", "sgs"),
+}
+METHODS = ["base", "e1c", "e1c_s"] + list(PW_METHODS)
+
+
 def configure(config, args):
     config["Repro"] = dict(seed=int(args.seed), range=list(args.range) if args.range else None, method=args.method,
-                           frame_offset=int(args.range[0]) if args.range else 0)
+                           frame_offset=int(args.range[0]) if args.range else 0,
+                           stiffness_every=int(getattr(args, "stiffness_every", 0) or 0))
+    if args.method in PW_METHODS:
+        import yaml
+        with open(E1C_CONFIG) as f:
+            pt = yaml.safe_load(f)["PlaneTracking"]
+        with open(PW_CONFIG) as f:
+            pw = yaml.safe_load(f)
+        with open(PW_CALIB) as f:
+            cal = yaml.safe_load(f)
+        pt.update(pw["PlaneTracking"])
+        mm, rob, am, t1, sm, pg = PW_METHODS[args.method]
+        pt.update(enable=True, pw=True, match_mode=mm, robust=rob, anchor_mode=am, kf_trigger_t1=t1, scale_mode=sm)
+        config["PlaneTracking"] = pt
+        config["PGO"] = dict(pw["PGO"], mode=pg)
+        if int(getattr(args, "pgo_force_every", 0) or 0) > 0:
+            config["PGO"]["force_every_kf"] = int(args.pgo_force_every)
+        config["Noise"] = cal["Noise"]
+        config["Stiffness"] = dict(pw["Stiffness"], at_keyframes=True)
+        return config
     if args.method in ("e1c", "e1c_s"):
         import yaml
         with open(E1C_CONFIG) as f:
@@ -121,6 +155,18 @@ def write_outputs(frontend, ds, save_dir, total_s):
     _write_tum(os.path.join(save_dir, "traj_gt_all.txt"), gt)
     _write_tum(os.path.join(save_dir, "traj_kf.txt"), [est[pos[i]] for i in kf if i in pos])
     _write_tum(os.path.join(save_dir, "traj_gt_kf.txt"), [gt[pos[i]] for i in kf if i in pos])
+    # PLAN MONOGS-PW §3.4: corrected trajectory, every frame re-attached to the final pose of its reference keyframe
+    corr = []
+    ref = getattr(frontend, "ref_rel", {})
+    kf_set = set(kf)
+    for n, i in enumerate(ids):
+        if i in kf_set or i not in ref or ref[i][0] not in frontend.cameras:
+            corr.append(est[n])
+            continue
+        rk, Trel = ref[i]
+        _, Wk = _c2w(frontend.cameras[rk].R, frontend.cameras[rk].T)
+        corr.append((est[n][0], np.linalg.inv(Trel @ Wk)))
+    _write_tum(os.path.join(save_dir, "traj_all_corr.txt"), corr)
     with open(os.path.join(save_dir, "kf_indices.txt"), "w") as f:
         f.write("\n".join(str(i) for i in kf) + "\n")
     tr = list(getattr(frontend, "track_ms", []))

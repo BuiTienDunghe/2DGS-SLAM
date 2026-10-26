@@ -14,6 +14,58 @@ from utils.slam_utils import get_loss_mapping
 from utils import repro
 
 
+def rotmat_to_quat_wxyz(R):
+    """Rotation matrix (3x3 torch) -> unit quaternion (w, x, y, z)."""
+    m = R.double()
+    tr = m[0, 0] + m[1, 1] + m[2, 2]
+    if tr > 0:
+        s = torch.sqrt(tr + 1.0) * 2
+        q = torch.stack([0.25 * s, (m[2, 1] - m[1, 2]) / s, (m[0, 2] - m[2, 0]) / s, (m[1, 0] - m[0, 1]) / s])
+    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        s = torch.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2
+        q = torch.stack([(m[2, 1] - m[1, 2]) / s, 0.25 * s, (m[0, 1] + m[1, 0]) / s, (m[0, 2] + m[2, 0]) / s])
+    elif m[1, 1] > m[2, 2]:
+        s = torch.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2
+        q = torch.stack([(m[0, 2] - m[2, 0]) / s, (m[0, 1] + m[1, 0]) / s, 0.25 * s, (m[1, 2] + m[2, 1]) / s])
+    else:
+        s = torch.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2
+        q = torch.stack([(m[1, 0] - m[0, 1]) / s, (m[0, 2] + m[2, 0]) / s, (m[1, 2] + m[2, 1]) / s, 0.25 * s])
+    return q / q.norm()
+
+
+def quat_mul_wxyz(a, b):
+    """Hamilton product a (4,) x b (N, 4), both (w, x, y, z)."""
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+    return torch.stack([aw * bw - ax * bx - ay * by - az * bz, aw * bx + ax * bw + ay * bz - az * by,
+                        aw * by - ax * bz + ay * bw + az * bx, aw * bz + ax * by - ay * bx + az * bw], 1)
+
+
+@torch.no_grad()
+def apply_pgo_to_gaussians(gaussians, viewpoints, new_poses):
+    """PLAN MONOGS-PW §2.5 (shared by the backend and test T6)."""
+    ids = gaussians.unique_kfIDs.to(gaussians._xyz.device)
+    for kf, (R_new, T_new) in new_poses.items():
+        if kf not in viewpoints:
+            continue
+        vp = viewpoints[kf]
+        dev = gaussians._xyz.device
+        T_old = torch.eye(4, device=dev, dtype=torch.float64)
+        T_old[:3, :3], T_old[:3, 3] = vp.R.to(dev).double(), vp.T.to(dev).double()
+        Tn = torch.eye(4, device=dev, dtype=torch.float64)
+        Tn[:3, :3], Tn[:3, 3] = R_new.to(dev).double(), T_new.to(dev).double()
+        W = torch.linalg.inv(Tn) @ T_old
+        mask = ids == int(kf)
+        if mask.any():
+            xyz = gaussians._xyz.data[mask].double()
+            gaussians._xyz.data[mask] = (xyz @ W[:3, :3].T + W[:3, 3]).to(gaussians._xyz.dtype)
+            q = gaussians._rotation.data[mask].double()
+            qn = quat_mul_wxyz(rotmat_to_quat_wxyz(W[:3, :3]), q)
+            qn = qn / qn.norm(dim=1, keepdim=True)
+            gaussians._rotation.data[mask] = qn.to(gaussians._rotation.dtype)
+        vp.update_RT(R_new.to(vp.R.device).to(vp.R.dtype), T_new.to(vp.T.device).to(vp.T.dtype))
+
+
 class BackEnd(mp.Process):
     def __init__(self, config):
         super().__init__()
@@ -351,6 +403,12 @@ class BackEnd(mp.Process):
                 self.gaussians.update_learning_rate(iteration)
         Log("Map refinement done")
 
+    @torch.no_grad()
+    def apply_pgo(self, new_poses):
+        """PLAN MONOGS-PW §2.5: for every keyframe kf, W = inv(T_new) @ T_old (w2c 4x4); the Gaussians created by kf
+        (unique_kfIDs == kf) move by W (xyz, rotation quaternion w,x,y,z); the keyframe camera takes T_new."""
+        apply_pgo_to_gaussians(self.gaussians, self.viewpoints, new_poses)
+
     def push_to_frontend(self, tag=None):
         self.last_sent = 0
         keyframes = []
@@ -394,6 +452,9 @@ class BackEnd(mp.Process):
                     self.pause = True
                 elif data[0] == "unpause":
                     self.pause = False
+                elif data[0] == "pgo":   # PLAN MONOGS-PW §2.5: apply a pose-graph result
+                    self.apply_pgo(data[1])
+                    self.push_to_frontend("pgo")
                 elif data[0] == "color_refinement":
                     self.color_refinement()
                     self.push_to_frontend()

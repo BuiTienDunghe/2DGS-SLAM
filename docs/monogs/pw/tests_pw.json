@@ -1,0 +1,162 @@
+{
+ "T1": {
+  "a": {
+   "passed": true,
+   "pairs": [
+    [
+     0,
+     0
+    ],
+    [
+     1,
+     0
+    ]
+   ]
+  },
+  "b": {
+   "passed": true,
+   "e": 7.707538395149441,
+   "w": 0.017309907459445842,
+   "in_gate": true
+  },
+  "c": {
+   "passed": true,
+   "overlap_e1c": 1.0
+  },
+  "d": {
+   "passed": true,
+   "n_dropped": 1,
+   "err_m": 1.3256738189514616e-16,
+   "err_e1c_m": 0.02884441020371197
+  },
+  "e": {
+   "passed": true,
+   "match_identical": true,
+   "max_loss_diff": 0.0
+  },
+  "passed": true
+ },
+ "T2": {
+  "a": {
+   "passed": true,
+   "max_err": 0.0
+  },
+  "b": {
+   "passed": true,
+   "n_obs_kf": 2
+  },
+  "c": {
+   "passed": true,
+   "alive": [
+    true,
+    true,
+    false
+   ]
+  },
+  "d": {
+   "passed": true,
+   "created": {
+    "0": 1,
+    "1": 1
+   }
+  },
+  "passed": true
+ },
+ "T3": {
+  "a": {
+   "passed": true,
+   "tier1": [],
+   "tier2": [
+    [
+     0,
+     0
+    ]
+   ]
+  },
+  "b": {
+   "passed": true,
+   "tier2": []
+  },
+  "c": {
+   "passed": true,
+   "old": true,
+   "window_obs": false,
+   "gap6": false
+  },
+  "passed": true
+ },
+ "T4": {
+  "a": {
+   "passed": true,
+   "max_residual": 0.0
+  },
+  "b": {
+   "passed": true,
+   "err_before_cm": 11.573938732317668,
+   "err_after_cm": 2.9091154541173347,
+   "status": "applied"
+  },
+  "c": {
+   "passed": true,
+   "dropped": [
+    24
+   ],
+   "status": "applied"
+  },
+  "passed": true
+ },
+ "T5": {
+  "passed": false,
+  "trans_err_cm": 3.6842800439490015,
+  "rot_err_deg": 0.06340863357554175,
+  "true_t_along_intersection_cm": 3.984243539867305,
+  "icp_fitness": 1.0
+ },
+ "T7": {
+  "a": {
+   "passed": true
+  },
+  "b": {
+   "passed": true,
+   "min_delta": 0.0001370767131447792
+  },
+  "c": {
+   "passed": true,
+   "x": 0.02000000171191606,
+   "target": 0.019999999999999997
+  },
+  "d": {
+   "passed": "True",
+   "kappa_true": 37.0,
+   "kappa_est": 36.76809497330549
+  },
+  "e": {
+   "passed": "True",
+   "loss": 0.3550881059622698,
+   "formula": 0.35508810596226986
+  },
+  "passed": true
+ },
+ "T6": {
+  "passed": true,
+  "a_xyz_err": 3.746277315030966e-07,
+  "a_rot_err": 3.870453213483671e-07,
+  "b_depth_err_m": 0.00019788742065429688,
+  "b_depth_p99_m": 3.337860107421875e-06,
+  "b_valid_px": 291591,
+  "b_any_depth_max_m": 0.0008443593978881836,
+  "b_any_depth_p99_m": 6.4373016357421875e-06,
+  "note": "(a) xyz stored in float32: tolerance 1e-5; (b) valid = depth > 0 and opacity > 0.95 in both renders"
+ },
+ "noise_used": {
+  "source": "tools/monogs/pw/calib.py on the 4 fr3 *_validation sequences (planes) and the two base calibration runs (kappa, odometry)",
+  "sigma_n": 0.0041907774738404934,
+  "sigma_d_a": 0.00760616476617554,
+  "sigma_d_b": 4.204491930675162e-05,
+  "sigma_odo_t": 0.03957291009261158,
+  "sigma_odo_r": 0.013366797603670563,
+  "merge_deg": 2.5098995228020704,
+  "merge_m": 0.03915592831116382,
+  "kappa": 2915.655782860698
+ }
+}

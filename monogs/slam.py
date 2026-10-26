@@ -213,7 +213,9 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--save-dir", type=str, default=None)
     parser.add_argument("--range", type=int, nargs=2, default=None, metavar=("BEGIN", "END"))
-    parser.add_argument("--method", type=str, default="base", choices=["base", "e1c", "e1c_s"])
+    parser.add_argument("--method", type=str, default="base", choices=repro.METHODS)
+    parser.add_argument("--stiffness-every", type=int, default=0)  # PLAN MONOGS-PW §2.6: 0 = off (calibration runs)
+    parser.add_argument("--pgo-force-every", type=int, default=0)  # PLAN MONOGS-PW §7.2 smoke: force PGO every N keyframes
 
     args = parser.parse_args(sys.argv[1:])
 

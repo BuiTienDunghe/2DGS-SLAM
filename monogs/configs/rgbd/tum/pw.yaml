@@ -1,0 +1,23 @@
+# PLAN MONOGS-PW §3.2: flags and parameters of the plane-world methods (loaded by slam.py --method full* / sgs).
+# The method table (repro.PW_METHODS) sets match_mode, robust, anchor_mode, kf_trigger_t1, scale_mode and PGO.mode.
+PlaneTracking:
+  robust_c: 3.0
+  inlier_e: 3.0
+  candidate_max_kf: 2
+  t1_frames: 3
+  t1_top: 3
+  t1_min_gap: 10
+  closure_gate_deg: 15
+  closure_gate_m: 0.30
+  closure_min_kf_gap: 8
+Stiffness:
+  delta_t_m: 0.01
+  delta_r_deg: 0.5
+PGO:
+  force_every_kf: 0
+  min_kf_gap: 3
+  huber_k: 1.345
+  chi2_reject: 11.34
+  max_dt_m: 1.0
+  max_dr_deg: 30.0
+  max_nfev: 100
